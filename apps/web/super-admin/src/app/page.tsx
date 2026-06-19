@@ -184,6 +184,37 @@ type StandingOrderPause = {
   createdAt: string;
 };
 
+type RecurrenceRule = {
+  id: string;
+  customerId: string | null;
+  branchId: string | null;
+  ruleCode: string;
+  cadence: 'daily' | 'weekly' | 'custom';
+  status: 'active' | 'paused';
+  payload: {
+    deliveryDays: number[];
+    slotId: string;
+    notes?: string;
+    branchScoped: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StandingOrderChange = {
+  id: string;
+  standingOrderId: string;
+  customerId: string;
+  branchId: string | null;
+  changeType: 'schedule_update' | 'pause' | 'resume' | 'branch_move' | 'cancel';
+  status: 'draft' | 'submitted' | 'approved' | 'rejected' | 'applied';
+  requestedBy: string;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  reason: string;
+};
+
 type SupportCase = {
   id: string;
   customerId: string;
@@ -218,6 +249,8 @@ type Customer360Response = {
   timeline: CustomerTimelineEvent[];
   supportCases: SupportCase[];
   standingOrders: StandingOrder[];
+  recurrenceRules: RecurrenceRule[];
+  standingOrderChanges: StandingOrderChange[];
   orders: Order[];
 };
 
@@ -426,6 +459,8 @@ type AppState = {
   standingOrders: StandingOrder[];
   standingOrderRuns: StandingOrderRun[];
   standingOrderPauses: StandingOrderPause[];
+  recurrenceRules: RecurrenceRule[];
+  standingOrderChanges: StandingOrderChange[];
   erpContractPreview: VasyErpContractPreview | null;
   notifications: {
     jobs: NotificationJob[];
@@ -460,6 +495,8 @@ const initialAppState: AppState = {
   standingOrders: [],
   standingOrderRuns: [],
   standingOrderPauses: [],
+  recurrenceRules: [],
+  standingOrderChanges: [],
   erpContractPreview: null,
   notifications: { jobs: [], deliveries: [] },
   accountHealth: { snapshots: [], actions: [] },
@@ -489,6 +526,12 @@ export default function Home() {
   const [standingOrderItemsDraft, setStandingOrderItemsDraft] = useState('[{"productId":"prod_loaf","quantity":12}]');
   const [standingOrderNotesDraft, setStandingOrderNotesDraft] = useState('Weekday breakfast repeat.');
   const [standingOrderRunDate, setStandingOrderRunDate] = useState(new Date().toISOString().slice(0, 10));
+  const [recurrenceRuleCustomerId, setRecurrenceRuleCustomerId] = useState('cust_cafe_nook');
+  const [recurrenceRuleBranchId, setRecurrenceRuleBranchId] = useState('branch_cafe_nook_main');
+  const [recurrenceRuleCode, setRecurrenceRuleCode] = useState('weekday_breakfast_repeat');
+  const [recurrenceRuleDaysDraft, setRecurrenceRuleDaysDraft] = useState('1,2,3,4,5');
+  const [recurrenceRuleSlotId, setRecurrenceRuleSlotId] = useState('slot_morning');
+  const [recurrenceRuleNotes, setRecurrenceRuleNotes] = useState('Auto-generate weekday breakfast runs.');
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -567,6 +610,8 @@ export default function Home() {
       let standingOrders: StandingOrder[] = [];
       let standingOrderRuns: StandingOrderRun[] = [];
       let standingOrderPauses: StandingOrderPause[] = [];
+      let recurrenceRules: RecurrenceRule[] = [];
+      let standingOrderChanges: StandingOrderChange[] = [];
       let erpSyncStatus: ErpSyncStatus | null = null;
       let erpContractPreview: VasyErpContractPreview | null = null;
       let notifications: AppState['notifications'] = { jobs: [], deliveries: [] };
@@ -604,6 +649,8 @@ export default function Home() {
         standingOrders = standingJson.standingOrders ?? [];
         standingOrderRuns = standingJson.standingOrderRuns ?? [];
         standingOrderPauses = standingJson.standingOrderPauses ?? [];
+        recurrenceRules = standingJson.recurrenceRules ?? [];
+        standingOrderChanges = standingJson.standingOrderChanges ?? [];
       }
 
       if (notificationsRes) {
@@ -695,6 +742,8 @@ export default function Home() {
         standingOrders,
         standingOrderRuns,
         standingOrderPauses,
+        recurrenceRules,
+        standingOrderChanges,
         erpContractPreview,
         notifications,
         accountHealth,
@@ -762,6 +811,8 @@ export default function Home() {
     standingOrders,
     standingOrderRuns,
     standingOrderPauses,
+    recurrenceRules,
+    standingOrderChanges,
     erpContractPreview,
   } = appState;
   const latestEvents = auditEvents.slice(0, 4);
@@ -1013,6 +1064,35 @@ export default function Home() {
     );
   }
 
+  async function createRecurrenceRule() {
+    if (!token) {
+      return;
+    }
+
+    const customerId = recurrenceRuleCustomerId.trim() || null;
+    const branchId = recurrenceRuleBranchId.trim() || null;
+    const days = recurrenceRuleDaysDraft
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value));
+
+    await performAction(
+      '/recurrence-rules',
+      {
+        customerId,
+        branchId,
+        ruleCode: recurrenceRuleCode.trim(),
+        cadence: 'weekly',
+        status: 'active',
+        deliveryDays: days,
+        slotId: recurrenceRuleSlotId.trim(),
+        notes: recurrenceRuleNotes.trim(),
+        branchScoped: true,
+      },
+      'Recurrence rule created.',
+    );
+  }
+
   async function updateStandingOrderStatus(standingOrderId: string, nextStatus: 'paused' | 'active') {
     if (!token) {
       return;
@@ -1031,6 +1111,30 @@ export default function Home() {
     }
 
     await performAction(`/standing-orders/${standingOrderId}/resume`, {}, 'Standing order resumed.');
+  }
+
+  async function skipStandingOrder(standingOrderId: string) {
+    if (!token) {
+      return;
+    }
+
+    await performAction(
+      `/standing-orders/${standingOrderId}/skip`,
+      { serviceDate: standingOrderRunDate, reason: 'Skipped from super admin portal.' },
+      'Standing order skipped for the selected day.',
+    );
+  }
+
+  async function decideStandingOrderChange(changeId: string, decision: 'approve' | 'reject') {
+    if (!token) {
+      return;
+    }
+
+    await performAction(
+      `/standing-order-changes/${changeId}/${decision}`,
+      {},
+      decision === 'approve' ? 'Standing order change approved.' : 'Standing order change rejected.',
+    );
   }
 
   async function generateStandingOrderRuns() {
@@ -1866,6 +1970,106 @@ export default function Home() {
                             </button>
                           </div>
                         </div>
+                        <div className="rounded-3xl border border-amber-200 bg-amber-50/80 p-4">
+                          <div className="text-sm font-black uppercase tracking-[0.18em] text-amber-700">
+                            Recurrence rule builder
+                          </div>
+                          <div className="mt-3 grid gap-3 md:grid-cols-2">
+                            <Field label="Customer" value={recurrenceRuleCustomerId} onChange={setRecurrenceRuleCustomerId} />
+                            <Field label="Branch" value={recurrenceRuleBranchId} onChange={setRecurrenceRuleBranchId} />
+                            <Field label="Rule code" value={recurrenceRuleCode} onChange={setRecurrenceRuleCode} />
+                            <Field label="Slot" value={recurrenceRuleSlotId} onChange={setRecurrenceRuleSlotId} />
+                            <Field
+                              label="Days"
+                              value={recurrenceRuleDaysDraft}
+                              onChange={setRecurrenceRuleDaysDraft}
+                              placeholder="1,2,3,4,5"
+                            />
+                            <Field
+                              label="Notes"
+                              value={recurrenceRuleNotes}
+                              onChange={setRecurrenceRuleNotes}
+                              placeholder="Auto-generate weekday breakfast runs."
+                            />
+                          </div>
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                createRecurrenceRule().catch((actionError) => setError((actionError as Error).message));
+                              }}
+                              className="rounded-2xl bg-amber-700 px-4 py-3 text-sm font-bold text-white"
+                            >
+                              Create rule
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">
+                              Active recurrence rules
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              {recurrenceRules.length > 0 ? (
+                                recurrenceRules.slice(0, 4).map((rule) => (
+                                  <div key={rule.id} className="rounded-2xl bg-slate-50 px-3 py-2">
+                                    <div className="text-sm font-semibold text-slate-950">{rule.ruleCode}</div>
+                                    <div className="text-xs text-slate-500">
+                                      {rule.status} | {rule.cadence} | slot {rule.payload.slotId}
+                                    </div>
+                                  </div>
+                                ))
+                              ) : (
+                                <GateMessage message="No recurrence rules configured yet." />
+                              )}
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">
+                              Pending change requests
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              {standingOrderChanges.length > 0 ? (
+                                standingOrderChanges.slice(0, 4).map((change) => (
+                                  <div key={change.id} className="rounded-2xl bg-slate-50 px-3 py-2">
+                                    <div className="text-sm font-semibold text-slate-950">{change.changeType}</div>
+                                    <div className="text-xs text-slate-500">
+                                      {change.status} | {change.reason}
+                                    </div>
+                                    <div className="mt-2 flex gap-2">
+                                      <button
+                                        type="button"
+                                        disabled={!canApprove}
+                                        onClick={() => {
+                                          decideStandingOrderChange(change.id, 'approve').catch((actionError) =>
+                                            setError((actionError as Error).message),
+                                          );
+                                        }}
+                                        className="rounded-full bg-emerald-600 px-3 py-1.5 text-[0.7rem] font-black uppercase tracking-[0.18em] text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        Approve
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={!canApprove}
+                                        onClick={() => {
+                                          decideStandingOrderChange(change.id, 'reject').catch((actionError) =>
+                                            setError((actionError as Error).message),
+                                          );
+                                        }}
+                                        className="rounded-full bg-slate-200 px-3 py-1.5 text-[0.7rem] font-black uppercase tracking-[0.18em] text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        Reject
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))
+                              ) : (
+                                <GateMessage message="No pending standing order changes." />
+                              )}
+                            </div>
+                          </div>
+                        </div>
                         <div className="space-y-3">
                           {standingOrders.length > 0 ? (
                             standingOrders.slice(0, 6).map((standingOrder) => (
@@ -1893,8 +2097,19 @@ export default function Home() {
                                       ).catch((actionError) => setError((actionError as Error).message));
                                     }}
                                     className="rounded-full bg-slate-950 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white"
+                                    >
+                                      {standingOrder.status === 'paused' ? 'Resume' : 'Pause'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      skipStandingOrder(standingOrder.id).catch((actionError) =>
+                                        setError((actionError as Error).message),
+                                      );
+                                    }}
+                                    className="rounded-full bg-amber-600 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white"
                                   >
-                                    {standingOrder.status === 'paused' ? 'Resume' : 'Pause'}
+                                    Skip day
                                   </button>
                                 </div>
                               </div>
@@ -2233,9 +2448,109 @@ export default function Home() {
                             generateStandingOrderRuns().catch((actionError) => setError((actionError as Error).message));
                           }}
                           className="rounded-2xl bg-orange-700 px-4 py-3 text-sm font-bold text-white"
+                          >
+                            Generate runs
+                          </button>
+                      </div>
+                    </div>
+                    <div className="rounded-3xl border border-amber-200 bg-amber-50/80 p-4">
+                      <div className="text-sm font-black uppercase tracking-[0.18em] text-amber-700">
+                        Recurrence rule builder
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <Field label="Customer" value={recurrenceRuleCustomerId} onChange={setRecurrenceRuleCustomerId} />
+                        <Field label="Branch" value={recurrenceRuleBranchId} onChange={setRecurrenceRuleBranchId} />
+                        <Field label="Rule code" value={recurrenceRuleCode} onChange={setRecurrenceRuleCode} />
+                        <Field label="Slot" value={recurrenceRuleSlotId} onChange={setRecurrenceRuleSlotId} />
+                        <Field
+                          label="Days"
+                          value={recurrenceRuleDaysDraft}
+                          onChange={setRecurrenceRuleDaysDraft}
+                          placeholder="1,2,3,4,5"
+                        />
+                        <Field
+                          label="Notes"
+                          value={recurrenceRuleNotes}
+                          onChange={setRecurrenceRuleNotes}
+                          placeholder="Auto-generate weekday breakfast runs."
+                        />
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            createRecurrenceRule().catch((actionError) => setError((actionError as Error).message));
+                          }}
+                          className="rounded-2xl bg-amber-700 px-4 py-3 text-sm font-bold text-white"
                         >
-                          Generate runs
+                          Create rule
                         </button>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-2xl border border-stone-200 bg-white p-4">
+                        <div className="text-sm font-black uppercase tracking-[0.18em] text-stone-400">
+                          Active recurrence rules
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {recurrenceRules.length > 0 ? (
+                            recurrenceRules.slice(0, 4).map((rule) => (
+                              <div key={rule.id} className="rounded-2xl bg-stone-50 px-3 py-2">
+                                <div className="text-sm font-semibold text-stone-950">{rule.ruleCode}</div>
+                                <div className="text-xs text-stone-500">
+                                  {rule.status} | {rule.cadence} | slot {rule.payload.slotId}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <GateMessage message="No recurrence rules configured yet." />
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-stone-200 bg-white p-4">
+                        <div className="text-sm font-black uppercase tracking-[0.18em] text-stone-400">
+                          Pending change requests
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {standingOrderChanges.length > 0 ? (
+                            standingOrderChanges.slice(0, 4).map((change) => (
+                              <div key={change.id} className="rounded-2xl bg-stone-50 px-3 py-2">
+                                <div className="text-sm font-semibold text-stone-950">{change.changeType}</div>
+                                <div className="text-xs text-stone-500">
+                                  {change.status} | {change.reason}
+                                </div>
+                                <div className="mt-2 flex gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={!canApprove}
+                                    onClick={() => {
+                                      decideStandingOrderChange(change.id, 'approve').catch((actionError) =>
+                                        setError((actionError as Error).message),
+                                      );
+                                    }}
+                                    className="rounded-full bg-emerald-600 px-3 py-1.5 text-[0.7rem] font-black uppercase tracking-[0.18em] text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!canApprove}
+                                    onClick={() => {
+                                      decideStandingOrderChange(change.id, 'reject').catch((actionError) =>
+                                        setError((actionError as Error).message),
+                                      );
+                                    }}
+                                    className="rounded-full bg-stone-200 px-3 py-1.5 text-[0.7rem] font-black uppercase tracking-[0.18em] text-stone-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <GateMessage message="No pending standing order changes." />
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="space-y-3">
@@ -2264,8 +2579,19 @@ export default function Home() {
                                   ).catch((actionError) => setError((actionError as Error).message));
                                 }}
                                 className="rounded-full bg-stone-950 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white"
+                                >
+                                  {standingOrder.status === 'paused' ? 'Resume' : 'Pause'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  skipStandingOrder(standingOrder.id).catch((actionError) =>
+                                    setError((actionError as Error).message),
+                                  );
+                                }}
+                                className="rounded-full bg-orange-700 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white"
                               >
-                                {standingOrder.status === 'paused' ? 'Resume' : 'Pause'}
+                                Skip day
                               </button>
                             </div>
                           </div>

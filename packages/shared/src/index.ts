@@ -320,6 +320,42 @@ export interface StandingOrderPause {
   createdAt: string;
 }
 
+export interface RecurrenceRule {
+  id: string;
+  customerId: string | null;
+  branchId: string | null;
+  ruleCode: string;
+  cadence: 'daily' | 'weekly' | 'custom';
+  status: 'active' | 'paused';
+  payload: {
+    deliveryDays: number[];
+    slotId: string;
+    notes?: string;
+    branchScoped: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StandingOrderChange {
+  id: string;
+  standingOrderId: string;
+  customerId: string;
+  branchId: string | null;
+  changeType: 'schedule_update' | 'pause' | 'resume' | 'branch_move' | 'cancel';
+  status: 'draft' | 'submitted' | 'approved' | 'rejected' | 'applied';
+  requestedBy: string;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  reason: string;
+  patchJson: {
+    branchId?: string | null;
+    status?: StandingOrder['status'];
+    schedule?: Partial<StandingOrderSchedule>;
+  };
+}
+
 export interface Customer360Response {
   customer: CustomerAccount;
   auth: CustomerPortalAuthRecord | null;
@@ -329,6 +365,8 @@ export interface Customer360Response {
   timeline: CustomerTimelineEvent[];
   supportCases: SupportCase[];
   standingOrders: StandingOrder[];
+  recurrenceRules: RecurrenceRule[];
+  standingOrderChanges: StandingOrderChange[];
   orders: Order[];
 }
 

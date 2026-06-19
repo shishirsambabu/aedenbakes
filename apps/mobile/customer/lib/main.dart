@@ -345,6 +345,8 @@ class _AedenJourneyState extends State<AedenJourney> {
     ),
   ];
   final List<_StandingOrder> _standingOrders = [];
+  final List<_StandingOrderChange> _standingOrderChanges = [];
+  final List<_RecurrenceRule> _recurrenceRules = [];
   final List<_CustomerBranch> _branches = [
     const _CustomerBranch(
       id: 'branch-main',
@@ -416,6 +418,9 @@ class _AedenJourneyState extends State<AedenJourney> {
   final TextEditingController _standingNotesController = TextEditingController(
     text: 'Weekday repeat',
   );
+  final TextEditingController _standingChangeReasonController = TextEditingController(
+    text: 'Please review this standing order update.',
+  );
   final TextEditingController _newBranchNameController = TextEditingController();
   final TextEditingController _newBranchCodeController = TextEditingController();
   final TextEditingController _newBranchNotesController = TextEditingController();
@@ -452,6 +457,7 @@ class _AedenJourneyState extends State<AedenJourney> {
     _instructionsController.dispose();
     _gstController.dispose();
     _standingNotesController.dispose();
+    _standingChangeReasonController.dispose();
     _newBranchNameController.dispose();
     _newBranchCodeController.dispose();
     _newBranchNotesController.dispose();
@@ -812,6 +818,8 @@ class _AedenJourneyState extends State<AedenJourney> {
 
   void _applyStandingOrders(Map<String, dynamic> payload) {
     final existingStandingOrders = List<_StandingOrder>.from(_standingOrders);
+    final existingStandingOrderChanges = List<_StandingOrderChange>.from(_standingOrderChanges);
+    final existingRecurrenceRules = List<_RecurrenceRule>.from(_recurrenceRules);
     final standingOrders = (payload['standingOrders'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(
@@ -836,6 +844,55 @@ class _AedenJourneyState extends State<AedenJourney> {
         .where((entry) => entry.id.isNotEmpty)
         .toList(growable: false);
 
+    final standingOrderChanges = (payload['standingOrderChanges'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _StandingOrderChange(
+            id: entry['id'] as String? ?? '',
+            standingOrderId: entry['standingOrderId'] as String? ?? '',
+            status: entry['status'] as String? ?? 'submitted',
+            changeType: entry['changeType'] as String? ?? 'schedule_update',
+            branchId: entry['branchId'] as String?,
+            reason: entry['reason'] as String? ?? '',
+            requestedBy: entry['requestedBy'] as String? ?? '',
+            requestedAt: entry['requestedAt'] as String? ?? '',
+            decidedBy: entry['decidedBy'] as String?,
+            decidedAt: entry['decidedAt'] as String?,
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    final recurrenceRules = (payload['recurrenceRules'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _RecurrenceRule(
+            id: entry['id'] as String? ?? '',
+            ruleCode: entry['ruleCode'] as String? ?? '',
+            status: entry['status'] as String? ?? 'active',
+            cadence: entry['cadence'] as String? ?? 'weekly',
+            branchId: entry['branchId'] as String?,
+            customerId: entry['customerId'] as String?,
+            slotId: entry['payload'] is Map<String, dynamic>
+                ? (entry['payload'] as Map<String, dynamic>)['slotId'] as String? ?? ''
+                : '',
+            branchScoped: entry['payload'] is Map<String, dynamic>
+                ? (entry['payload'] as Map<String, dynamic>)['branchScoped'] as bool? ?? false
+                : false,
+            deliveryDays: entry['payload'] is Map<String, dynamic>
+                ? ((entry['payload'] as Map<String, dynamic>)['deliveryDays'] as List<dynamic>? ?? const [])
+                    .whereType<num>()
+                    .map((day) => day.toInt())
+                    .toList(growable: false)
+                : const [],
+            notes: entry['payload'] is Map<String, dynamic>
+                ? (entry['payload'] as Map<String, dynamic>)['notes'] as String?
+                : null,
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
     if (!mounted) {
       return;
     }
@@ -843,6 +900,12 @@ class _AedenJourneyState extends State<AedenJourney> {
       _standingOrders
         ..clear()
         ..addAll(standingOrders.isNotEmpty ? standingOrders : existingStandingOrders);
+      _standingOrderChanges
+        ..clear()
+        ..addAll(standingOrderChanges.isNotEmpty ? standingOrderChanges : existingStandingOrderChanges);
+      _recurrenceRules
+        ..clear()
+        ..addAll(recurrenceRules.isNotEmpty ? recurrenceRules : existingRecurrenceRules);
     });
   }
 
@@ -1104,6 +1167,56 @@ class _AedenJourneyState extends State<AedenJourney> {
       _standingOrders.insert(0, order);
     });
     _showMessage('Standing order saved locally for ${branch.name}');
+  }
+
+  Future<void> _requestStandingOrderChange(_StandingOrder standingOrder) async {
+    final reason = _standingChangeReasonController.text.trim();
+    if (reason.isEmpty) {
+      _showMessage('Add a reason for the change request');
+      return;
+    }
+
+    final changeType = standingOrder.status == 'paused' ? 'resume' : 'pause';
+    final payload = {
+      'changeType': changeType,
+      'reason': reason,
+      'status': standingOrder.status == 'paused' ? 'active' : 'paused',
+    };
+
+    if (_sessionToken != null) {
+      try {
+        final response = await http.post(
+          Uri.parse('$_apiBaseUrl/standing-orders/${standingOrder.id}/change-request'),
+          headers: _authHeaders(),
+          body: jsonEncode(payload),
+        );
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw Exception(_extractApiError(response, 'Could not request standing order change'));
+        }
+        await _syncCustomerFromApi();
+        _showMessage('Change request submitted');
+        return;
+      } catch (error) {
+        _showMessage(error.toString());
+      }
+    }
+
+    final change = _StandingOrderChange(
+      id: 'soc-${DateTime.now().millisecondsSinceEpoch}',
+      standingOrderId: standingOrder.id,
+      status: 'submitted',
+      changeType: changeType,
+      branchId: _selectedBranchId,
+      reason: reason,
+      requestedBy: 'customer',
+      requestedAt: DateTime.now().toIso8601String(),
+      decidedBy: null,
+      decidedAt: null,
+    );
+    setState(() {
+      _standingOrderChanges.insert(0, change);
+    });
+    _showMessage('Change request submitted locally');
   }
 
   void _addProduct(String productId) {
@@ -2770,6 +2883,13 @@ class _AedenJourneyState extends State<AedenJourney> {
                   const SizedBox(height: 12),
                   const Text('Standing orders'),
                   const SizedBox(height: 8),
+                  TextField(
+                    controller: _standingChangeReasonController,
+                    decoration: const InputDecoration(
+                      labelText: 'Change request note',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
                   if (_standingOrders.isEmpty)
                     const _EmptyCard(
                       message: 'No standing orders saved yet.',
@@ -2809,6 +2929,93 @@ class _AedenJourneyState extends State<AedenJourney> {
                                   ),
                                 ),
                               ],
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  OutlinedButton(
+                                    onPressed: () => _requestStandingOrderChange(standingOrder),
+                                    child: Text(
+                                      standingOrder.status == 'paused'
+                                          ? 'Request resume'
+                                          : 'Request pause',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  const Text('Pending change requests'),
+                  const SizedBox(height: 8),
+                  if (_standingOrderChanges.isEmpty)
+                    const _EmptyCard(message: 'No standing order change requests yet.')
+                  else
+                    ..._standingOrderChanges.map(
+                      (change) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AedenPalette.line),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                change.changeType.replaceAll('_', ' '),
+                                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${change.status} | ${change.reason}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  const Text('Recurrence rules'),
+                  const SizedBox(height: 8),
+                  if (_recurrenceRules.isEmpty)
+                    const _EmptyCard(message: 'No recurrence rules configured yet.')
+                  else
+                    ..._recurrenceRules.map(
+                      (rule) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AedenPalette.line),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                rule.ruleCode,
+                                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${rule.status} | ${rule.cadence} | slot ${rule.slotId}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
                             ],
                           ),
                         ),
@@ -5351,6 +5558,58 @@ class _StandingOrder {
   final String slotLabel;
   final List<int> deliveryDays;
   final String notes;
+}
+
+class _StandingOrderChange {
+  const _StandingOrderChange({
+    required this.id,
+    required this.standingOrderId,
+    required this.status,
+    required this.changeType,
+    required this.branchId,
+    required this.reason,
+    required this.requestedBy,
+    required this.requestedAt,
+    required this.decidedBy,
+    required this.decidedAt,
+  });
+
+  final String id;
+  final String standingOrderId;
+  final String status;
+  final String changeType;
+  final String? branchId;
+  final String reason;
+  final String requestedBy;
+  final String requestedAt;
+  final String? decidedBy;
+  final String? decidedAt;
+}
+
+class _RecurrenceRule {
+  const _RecurrenceRule({
+    required this.id,
+    required this.ruleCode,
+    required this.status,
+    required this.cadence,
+    required this.branchId,
+    required this.customerId,
+    required this.slotId,
+    required this.branchScoped,
+    required this.deliveryDays,
+    required this.notes,
+  });
+
+  final String id;
+  final String ruleCode;
+  final String status;
+  final String cadence;
+  final String? branchId;
+  final String? customerId;
+  final String slotId;
+  final bool branchScoped;
+  final List<int> deliveryDays;
+  final String? notes;
 }
 
 class _StandingDayChip extends StatefulWidget {

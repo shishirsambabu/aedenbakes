@@ -37,7 +37,9 @@ import type {
   Product,
   ProductDayCapacity,
   ProductionBatchLine,
+  RecurrenceRule,
   StandingOrder,
+  StandingOrderChange,
   StandingOrderPause,
   StandingOrderRun,
   SupportCase,
@@ -261,6 +263,8 @@ type ApiStateSnapshot = {
   standingOrders: StandingOrder[];
   standingOrderRuns: StandingOrderRun[];
   standingOrderPauses: StandingOrderPause[];
+  recurrenceRules: RecurrenceRule[];
+  standingOrderChanges: StandingOrderChange[];
   products: typeof products;
   capacities: typeof capacities;
   slots: typeof slots;
@@ -472,6 +476,58 @@ let standingOrderPauses: StandingOrderPause[] = [
     endDate: null,
     reason: 'Paused for temporary renovation closure.',
     createdAt: '2026-06-19T08:20:00+05:30',
+  },
+];
+let recurrenceRules: RecurrenceRule[] = [
+  {
+    id: 'rule_cafe_nook_weekday',
+    customerId: 'cust_cafe_nook',
+    branchId: 'branch_cafe_nook_main',
+    ruleCode: 'weekday_breakfast_repeat',
+    cadence: 'weekly',
+    status: 'active',
+    payload: {
+      deliveryDays: [1, 2, 3, 4, 5],
+      slotId: 'slot_morning',
+      notes: 'Auto-generate weekday breakfast runs for the main kitchen.',
+      branchScoped: true,
+    },
+    createdAt: '2026-06-19T08:18:00+05:30',
+    updatedAt: '2026-06-19T08:18:00+05:30',
+  },
+  {
+    id: 'rule_hotel_lotus_weekend',
+    customerId: 'cust_hotel_lotus',
+    branchId: 'branch_hotel_lotus_main',
+    ruleCode: 'weekend_banquet_pack',
+    cadence: 'weekly',
+    status: 'paused',
+    payload: {
+      deliveryDays: [0, 6],
+      slotId: 'slot_evening',
+      notes: 'Weekend standing pack for banquet support.',
+      branchScoped: true,
+    },
+    createdAt: '2026-06-19T08:19:00+05:30',
+    updatedAt: '2026-06-19T08:19:00+05:30',
+  },
+];
+let standingOrderChanges: StandingOrderChange[] = [
+  {
+    id: 'soc_hotel_lotus_pause_note',
+    standingOrderId: 'so_hotel_lotus_weekend',
+    customerId: 'cust_hotel_lotus',
+    branchId: 'branch_hotel_lotus_main',
+    changeType: 'pause',
+    status: 'submitted',
+    requestedBy: 'customer_admin',
+    requestedAt: '2026-06-19T08:22:00+05:30',
+    decidedBy: null,
+    decidedAt: null,
+    reason: 'Pause until renovation work is complete.',
+    patchJson: {
+      status: 'paused',
+    },
   },
 ];
 let notificationJobs: NotificationJob[] = [];
@@ -1450,6 +1506,8 @@ app.get(
       standingOrders,
       standingOrderRuns,
       standingOrderPauses,
+      recurrenceRules,
+      standingOrderChanges,
     });
   },
 );
@@ -1469,6 +1527,8 @@ app.get('/customer/standing-orders', authenticate, requireAnyRole(['customer']),
     standingOrderPauses: standingOrderPauses.filter((entry) =>
       standingOrders.some((order) => order.id === entry.standingOrderId && order.customerId === customerId),
     ),
+    recurrenceRules: recurrenceRules.filter((entry) => entry.customerId === null || entry.customerId === customerId),
+    standingOrderChanges: standingOrderChanges.filter((entry) => entry.customerId === customerId),
   });
 });
 
@@ -1782,6 +1842,284 @@ app.post('/standing-orders/generate-runs', authenticate, requireAnyRole(['owner'
   const result = generateStandingOrderRuns(serviceDate, req.session?.user.role ?? 'system');
   persistStateSoon();
   res.json(result);
+});
+
+app.get('/recurrence-rules', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({ recurrenceRules });
+});
+
+app.post('/recurrence-rules', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const body = req.body as Partial<{
+    customerId: string | null;
+    branchId: string | null;
+    ruleCode: string;
+    cadence: RecurrenceRule['cadence'];
+    status: RecurrenceRule['status'];
+    deliveryDays: number[];
+    slotId: string;
+    notes: string;
+    branchScoped: boolean;
+  }>;
+  const ruleCode = body.ruleCode?.trim();
+  const slotId = body.slotId?.trim();
+  const deliveryDays = Array.isArray(body.deliveryDays) ? normalizeDeliveryDays(body.deliveryDays) : [];
+  if (!ruleCode || !slotId || deliveryDays.length === 0) {
+    res.status(400).json({ error: 'ruleCode, slotId, and deliveryDays are required' });
+    return;
+  }
+
+  const customerId = body.customerId?.trim() || null;
+  const branchId = body.branchId?.trim() || null;
+  if (branchId) {
+    const branch = customerBranches.find((entry) => entry.id === branchId);
+    if (!branch) {
+      res.status(400).json({ error: 'branchId does not exist' });
+      return;
+    }
+    if (customerId && branch.customerId !== customerId) {
+      res.status(400).json({ error: 'branchId does not belong to the selected customer' });
+      return;
+    }
+  }
+
+  const rule: RecurrenceRule = {
+    id: `rr_${crypto.randomUUID().slice(0, 8)}`,
+    customerId,
+    branchId,
+    ruleCode,
+    cadence: body.cadence ?? 'weekly',
+    status: body.status ?? 'active',
+    payload: {
+      deliveryDays,
+      slotId,
+      notes: body.notes?.trim() || undefined,
+      branchScoped: body.branchScoped ?? Boolean(branchId),
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  recurrenceRules.unshift(rule);
+  recordAudit({
+    kind: 'customer_onboarded',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Created recurrence rule ${rule.ruleCode}.`,
+    referenceId: rule.id,
+  });
+  persistStateSoon();
+  res.status(201).json({ recurrenceRule: rule, recurrenceRules });
+});
+
+app.patch('/recurrence-rules/:id', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const rule = recurrenceRules.find((entry) => entry.id === id);
+  if (!rule) {
+    res.status(404).json({ error: 'Recurrence rule not found' });
+    return;
+  }
+
+  const body = req.body as Partial<{
+    branchId: string | null;
+    status: RecurrenceRule['status'];
+    deliveryDays: number[];
+    slotId: string;
+    notes: string;
+    branchScoped: boolean;
+  }>;
+  if (body.branchId !== undefined) {
+    const branchId = body.branchId?.trim() || null;
+    if (branchId) {
+      const branch = customerBranches.find((entry) => entry.id === branchId);
+      if (!branch) {
+        res.status(400).json({ error: 'branchId does not exist' });
+        return;
+      }
+      rule.branchId = branch.id;
+      rule.customerId = branch.customerId;
+    } else {
+      rule.branchId = null;
+    }
+  }
+  if (body.status) {
+    rule.status = body.status;
+  }
+  if (Array.isArray(body.deliveryDays)) {
+    rule.payload.deliveryDays = normalizeDeliveryDays(body.deliveryDays);
+  }
+  if (typeof body.slotId === 'string' && body.slotId.trim()) {
+    rule.payload.slotId = body.slotId.trim();
+  }
+  if (typeof body.notes === 'string') {
+    rule.payload.notes = body.notes.trim() || undefined;
+  }
+  if (typeof body.branchScoped === 'boolean') {
+    rule.payload.branchScoped = body.branchScoped;
+  }
+  rule.updatedAt = new Date().toISOString();
+  recordAudit({
+    kind: 'customer_onboarded',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Updated recurrence rule ${rule.ruleCode}.`,
+    referenceId: rule.id,
+  });
+  persistStateSoon();
+  res.json({ recurrenceRule: rule, recurrenceRules });
+});
+
+app.get('/standing-order-changes', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({ standingOrderChanges });
+});
+
+app.post(
+  '/standing-orders/:id/change-request',
+  authenticate,
+  requireAnyRole(['owner', 'manager', 'accounts', 'customer']),
+  (req, res) => {
+    const standingOrderId = readRouteParam(req.params.id);
+    const standingOrder = standingOrders.find((entry) => entry.id === standingOrderId);
+    if (!standingOrder) {
+      res.status(404).json({ error: 'Standing order not found' });
+      return;
+    }
+
+    const customerId = req.session?.user.customerId;
+    if (req.session?.user.role === 'customer' && standingOrder.customerId !== customerId) {
+      res.status(403).json({ error: 'Standing order does not belong to this customer session' });
+      return;
+    }
+
+    const body = req.body as Partial<{
+      changeType: StandingOrderChange['changeType'];
+      reason: string;
+      branchId: string | null;
+      status: StandingOrder['status'];
+      schedule: Partial<StandingOrder['schedule']>;
+    }>;
+    const changeType = body.changeType ?? 'schedule_update';
+    const reason = body.reason?.trim();
+    if (!reason) {
+      res.status(400).json({ error: 'reason is required' });
+      return;
+    }
+
+    const change: StandingOrderChange = {
+      id: `soc_${crypto.randomUUID().slice(0, 8)}`,
+      standingOrderId: standingOrder.id,
+      customerId: standingOrder.customerId,
+      branchId: standingOrder.branchId ?? null,
+      changeType,
+      status: 'submitted',
+      requestedBy: req.session?.user.username ?? 'system',
+      requestedAt: new Date().toISOString(),
+      decidedBy: null,
+      decidedAt: null,
+      reason,
+      patchJson: {
+        branchId: body.branchId ?? standingOrder.branchId ?? null,
+        status: body.status,
+        schedule: body.schedule,
+      },
+    };
+    standingOrderChanges.unshift(change);
+    recordAudit({
+      kind: 'approval_queued',
+      actor: req.session?.user.role ?? 'system',
+      summary: `Queued standing order change ${change.id} for ${standingOrder.id}.`,
+      referenceId: change.id,
+    });
+    persistStateSoon();
+    res.status(201).json({ change, standingOrderChanges });
+  },
+);
+
+app.post('/standing-order-changes/:id/approve', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const change = standingOrderChanges.find((entry) => entry.id === id);
+  if (!change) {
+    res.status(404).json({ error: 'Standing order change not found' });
+    return;
+  }
+  if (change.status === 'rejected' || change.status === 'applied') {
+    res.status(400).json({ error: 'Standing order change is no longer pending' });
+    return;
+  }
+
+  change.status = 'approved';
+  const applied = applyStandingOrderChange(change);
+  if (!applied) {
+    res.status(400).json({ error: 'Change could not be applied' });
+    return;
+  }
+
+  change.status = 'applied';
+  change.decidedBy = req.session?.user.username ?? 'system';
+  change.decidedAt = new Date().toISOString();
+  recordAudit({
+    kind: 'approval_approved',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Approved standing order change ${change.id}.`,
+    referenceId: change.id,
+  });
+  persistStateSoon();
+  res.json({ change, standingOrders, standingOrderChanges });
+});
+
+app.post('/standing-order-changes/:id/reject', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const change = standingOrderChanges.find((entry) => entry.id === id);
+  if (!change) {
+    res.status(404).json({ error: 'Standing order change not found' });
+    return;
+  }
+  if (change.status === 'applied') {
+    res.status(400).json({ error: 'Applied changes cannot be rejected' });
+    return;
+  }
+
+  change.status = 'rejected';
+  change.decidedBy = req.session?.user.username ?? 'system';
+  change.decidedAt = new Date().toISOString();
+  recordAudit({
+    kind: 'approval_rejected',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Rejected standing order change ${change.id}.`,
+    referenceId: change.id,
+  });
+  persistStateSoon();
+  res.json({ change, standingOrderChanges });
+});
+
+app.post('/standing-orders/:id/skip', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const standingOrder = standingOrders.find((entry) => entry.id === id);
+  if (!standingOrder) {
+    res.status(404).json({ error: 'Standing order not found' });
+    return;
+  }
+
+  const body = req.body as { serviceDate?: string; reason?: string };
+  const serviceDate = body.serviceDate?.trim() || todayIsoDate();
+  const reason = body.reason?.trim() || 'Skipped from admin control.';
+  const existingPause = standingOrderPauses.find(
+    (pause) => pause.standingOrderId === standingOrder.id && pause.startDate === serviceDate && pause.endDate === serviceDate,
+  );
+  if (!existingPause) {
+    standingOrderPauses.unshift({
+      id: `pause_${crypto.randomUUID().slice(0, 8)}`,
+      standingOrderId: standingOrder.id,
+      startDate: serviceDate,
+      endDate: serviceDate,
+      reason,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  recordAudit({
+    kind: 'standing_order_paused',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Skipped standing order ${standingOrder.id} for ${serviceDate}. ${reason}`,
+    referenceId: standingOrder.id,
+  });
+  persistStateSoon();
+  res.json({ standingOrder, standingOrderPauses });
 });
 
 app.get('/notifications', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
@@ -2698,6 +3036,8 @@ function buildCustomer360(customerId: string): Customer360Response {
   const notes = customerNotes.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const supportCasesForCustomer = supportCases.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.lastUpdatedAt.localeCompare(left.lastUpdatedAt));
   const standingOrdersForCustomer = standingOrders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const recurrenceRulesForCustomer = recurrenceRules.filter((entry) => entry.customerId === null || entry.customerId === customer.id);
+  const standingOrderChangesForCustomer = standingOrderChanges.filter((entry) => entry.customerId === customer.id);
   const timeline = buildCustomerTimeline(customer.id);
   return {
     customer,
@@ -2719,6 +3059,8 @@ function buildCustomer360(customerId: string): Customer360Response {
     timeline,
     supportCases: supportCasesForCustomer,
     standingOrders: standingOrdersForCustomer,
+    recurrenceRules: recurrenceRulesForCustomer,
+    standingOrderChanges: standingOrderChangesForCustomer,
     branches,
     users,
     orders: orders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
@@ -2804,6 +3146,17 @@ function buildCustomerTimeline(customerId: string): CustomerTimelineEvent[] {
       referenceId: pause.id,
       summary: `Standing order paused: ${pause.reason}`,
       createdAt: pause.createdAt,
+    });
+  }
+
+  for (const change of standingOrderChanges.filter((entry) => entry.customerId === customerId)) {
+    events.push({
+      id: `timeline_change_${change.id}`,
+      customerId,
+      eventType: 'standing_order_updated',
+      referenceId: change.id,
+      summary: `Standing order change ${change.changeType} is ${change.status}.`,
+      createdAt: change.requestedAt,
     });
   }
 
@@ -3195,6 +3548,50 @@ function generateStandingOrderRuns(serviceDate: string, actor: string) {
   };
 }
 
+function applyStandingOrderChange(change: StandingOrderChange) {
+  const standingOrder = standingOrders.find((entry) => entry.id === change.standingOrderId);
+  if (!standingOrder) {
+    return false;
+  }
+
+  const patch = change.patchJson;
+  if (patch.branchId !== undefined) {
+    const branchId = patch.branchId?.trim() || null;
+    if (branchId) {
+      const branch = customerBranches.find((entry) => entry.id === branchId && entry.customerId === standingOrder.customerId);
+      if (!branch) {
+        return false;
+      }
+      standingOrder.branchId = branch.id;
+    } else {
+      standingOrder.branchId = null;
+    }
+  }
+  if (patch.status) {
+    standingOrder.status = patch.status;
+  }
+  if (patch.schedule) {
+    if (Array.isArray(patch.schedule.deliveryDays)) {
+      standingOrder.schedule.deliveryDays = normalizeDeliveryDays(patch.schedule.deliveryDays);
+    }
+    if (typeof patch.schedule.slotId === 'string' && patch.schedule.slotId.trim()) {
+      standingOrder.schedule.slotId = patch.schedule.slotId.trim();
+    }
+    if (patch.schedule.paymentMode) {
+      standingOrder.schedule.paymentMode = patch.schedule.paymentMode;
+    }
+    if (Array.isArray(patch.schedule.items) && patch.schedule.items.length > 0) {
+      standingOrder.schedule.items = sanitizeStandingOrderItems(patch.schedule.items);
+    }
+    if (typeof patch.schedule.notes === 'string') {
+      standingOrder.schedule.notes = patch.schedule.notes.trim() || undefined;
+    }
+  }
+
+  standingOrder.updatedAt = new Date().toISOString();
+  return true;
+}
+
 function parseClockToMinutes(value: string) {
   const [hours, minutes] = value.split(':').map((entry) => Number(entry));
   if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
@@ -3227,6 +3624,8 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     standingOrders: parsed.standingOrders ?? standingOrders,
     standingOrderRuns: parsed.standingOrderRuns ?? standingOrderRuns,
     standingOrderPauses: parsed.standingOrderPauses ?? standingOrderPauses,
+    recurrenceRules: parsed.recurrenceRules ?? recurrenceRules,
+    standingOrderChanges: parsed.standingOrderChanges ?? standingOrderChanges,
     products: parsed.products ?? products,
     capacities: parsed.capacities ?? capacities,
     slots: parsed.slots ?? slots,
@@ -3296,6 +3695,8 @@ async function persistState() {
     standingOrders,
     standingOrderRuns,
     standingOrderPauses,
+    recurrenceRules,
+    standingOrderChanges,
     products,
     capacities,
     slots,
@@ -3384,6 +3785,8 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   standingOrders.splice(0, standingOrders.length, ...snapshot.standingOrders);
   standingOrderRuns.splice(0, standingOrderRuns.length, ...snapshot.standingOrderRuns);
   standingOrderPauses.splice(0, standingOrderPauses.length, ...snapshot.standingOrderPauses);
+  recurrenceRules.splice(0, recurrenceRules.length, ...snapshot.recurrenceRules);
+  standingOrderChanges.splice(0, standingOrderChanges.length, ...snapshot.standingOrderChanges);
   products.splice(0, products.length, ...snapshot.products);
   capacities.splice(0, capacities.length, ...snapshot.capacities);
   slots.splice(0, slots.length, ...snapshot.slots);

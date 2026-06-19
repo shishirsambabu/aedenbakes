@@ -32,6 +32,9 @@ import type {
   Product,
   ProductDayCapacity,
   ProductionBatchLine,
+  StandingOrder,
+  StandingOrderPause,
+  StandingOrderRun,
   SupportCase,
   VasyErpContractPreview,
   VasyErpPushResult,
@@ -110,6 +113,9 @@ type ApiStateSnapshot = {
   customerAuthRecords: AuthRecord[];
   customerNotes: CustomerNote[];
   supportCases: SupportCase[];
+  standingOrders: StandingOrder[];
+  standingOrderRuns: StandingOrderRun[];
+  standingOrderPauses: StandingOrderPause[];
   products: typeof products;
   capacities: typeof capacities;
   slots: typeof slots;
@@ -199,6 +205,50 @@ let supportCases: SupportCase[] = [
     createdAt: '2026-06-19T08:00:00+05:30',
     closedAt: null,
     lastUpdatedAt: '2026-06-19T08:10:00+05:30',
+  },
+];
+let standingOrders: StandingOrder[] = [
+  {
+    id: 'so_cafe_nook_weekday',
+    customerId: 'cust_cafe_nook',
+    status: 'active',
+    schedule: {
+      deliveryDays: [1, 2, 3, 4, 5],
+      slotId: 'slot_morning',
+      paymentMode: 'credit',
+      items: [
+        { productId: 'prod_loaf', quantity: 12 },
+        { productId: 'prod_croissant', quantity: 12 },
+      ],
+      notes: 'Weekday breakfast repeat for Cafe Nook.',
+    },
+    createdAt: '2026-06-19T08:15:00+05:30',
+    updatedAt: '2026-06-19T08:15:00+05:30',
+  },
+  {
+    id: 'so_hotel_lotus_weekend',
+    customerId: 'cust_hotel_lotus',
+    status: 'paused',
+    schedule: {
+      deliveryDays: [0, 6],
+      slotId: 'slot_evening',
+      paymentMode: 'part-pay',
+      items: [{ productId: 'prod_loaf', quantity: 8 }],
+      notes: 'Weekend banquet bread pack for Hotel Lotus.',
+    },
+    createdAt: '2026-06-19T08:16:00+05:30',
+    updatedAt: '2026-06-19T08:20:00+05:30',
+  },
+];
+let standingOrderRuns: StandingOrderRun[] = [];
+let standingOrderPauses: StandingOrderPause[] = [
+  {
+    id: 'pause_hotel_lotus_1',
+    standingOrderId: 'so_hotel_lotus_weekend',
+    startDate: '2026-06-19',
+    endDate: null,
+    reason: 'Paused for temporary renovation closure.',
+    createdAt: '2026-06-19T08:20:00+05:30',
   },
 ];
 const processedDeliveryEventIds = new Set<string>();
@@ -679,6 +729,204 @@ app.post('/customers/:id/notes', authenticate, requireAnyRole(['owner', 'manager
   persistStateSoon();
 
   res.status(201).json({ note: customerNote, customer: buildCustomer360(id) });
+});
+
+app.get(
+  '/standing-orders',
+  authenticate,
+  requireAnyRole(['owner', 'manager', 'accounts', 'production', 'support']),
+  (_req, res) => {
+    res.json({
+      standingOrders,
+      standingOrderRuns,
+      standingOrderPauses,
+    });
+  },
+);
+
+app.post('/standing-orders', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const body = req.body as Partial<{
+    customerId: string;
+    status: StandingOrder['status'];
+    deliveryDays: number[];
+    slotId: string;
+    paymentMode: StandingOrder['schedule']['paymentMode'];
+    items: StandingOrder['schedule']['items'];
+    notes: string;
+  }>;
+
+  const customerId = body.customerId?.trim();
+  if (!customerId) {
+    res.status(400).json({ error: 'customerId is required' });
+    return;
+  }
+
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  if (!body.slotId?.trim() || !Array.isArray(body.deliveryDays) || !Array.isArray(body.items) || body.items.length === 0) {
+    res.status(400).json({ error: 'deliveryDays, slotId, and items are required' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const standingOrder: StandingOrder = {
+    id: `so_${crypto.randomUUID()}`,
+    customerId,
+    status: body.status ?? 'draft',
+    schedule: {
+      deliveryDays: normalizeDeliveryDays(body.deliveryDays),
+      slotId: body.slotId.trim(),
+      paymentMode: body.paymentMode ?? 'prepaid',
+      items: sanitizeStandingOrderItems(body.items),
+      notes: body.notes?.trim() || undefined,
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  standingOrders.unshift(standingOrder);
+  recordAudit({
+    kind: 'standing_order_created',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Created standing order ${standingOrder.id} for ${customer.name}.`,
+    referenceId: standingOrder.id,
+  });
+  persistStateSoon();
+
+  res.status(201).json({ standingOrder, standingOrders });
+});
+
+app.patch('/standing-orders/:id', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const standingOrder = standingOrders.find((entry) => entry.id === id);
+  if (!standingOrder) {
+    res.status(404).json({ error: 'Standing order not found' });
+    return;
+  }
+
+  const body = req.body as Partial<{
+    status: StandingOrder['status'];
+    deliveryDays: number[];
+    slotId: string;
+    paymentMode: StandingOrder['schedule']['paymentMode'];
+    items: StandingOrder['schedule']['items'];
+    notes: string;
+  }>;
+
+  if (body.status) {
+    standingOrder.status = body.status;
+  }
+  if (Array.isArray(body.deliveryDays)) {
+    standingOrder.schedule.deliveryDays = normalizeDeliveryDays(body.deliveryDays);
+  }
+  if (typeof body.slotId === 'string' && body.slotId.trim()) {
+    standingOrder.schedule.slotId = body.slotId.trim();
+  }
+  if (body.paymentMode) {
+    standingOrder.schedule.paymentMode = body.paymentMode;
+  }
+  if (Array.isArray(body.items) && body.items.length > 0) {
+    standingOrder.schedule.items = sanitizeStandingOrderItems(body.items);
+  }
+  if (typeof body.notes === 'string') {
+    standingOrder.schedule.notes = body.notes.trim() || undefined;
+  }
+  standingOrder.updatedAt = new Date().toISOString();
+
+  recordAudit({
+    kind: 'standing_order_updated',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Updated standing order ${standingOrder.id}.`,
+    referenceId: standingOrder.id,
+  });
+  persistStateSoon();
+
+  res.json({ standingOrder, standingOrders });
+});
+
+app.post('/standing-orders/:id/pause', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const standingOrder = standingOrders.find((entry) => entry.id === id);
+  if (!standingOrder) {
+    res.status(404).json({ error: 'Standing order not found' });
+    return;
+  }
+
+  if (standingOrder.status === 'cancelled') {
+    res.status(400).json({ error: 'Cannot pause a cancelled standing order' });
+    return;
+  }
+
+  const body = req.body as { reason?: string; startDate?: string; endDate?: string };
+  const reason = body.reason?.trim();
+  if (!reason) {
+    res.status(400).json({ error: 'reason is required' });
+    return;
+  }
+
+  standingOrder.status = 'paused';
+  standingOrder.updatedAt = new Date().toISOString();
+  const pause: StandingOrderPause = {
+    id: `pause_${crypto.randomUUID()}`,
+    standingOrderId: standingOrder.id,
+    startDate: body.startDate?.trim() || todayIsoDate(),
+    endDate: body.endDate?.trim() || null,
+    reason,
+    createdAt: new Date().toISOString(),
+  };
+  standingOrderPauses.unshift(pause);
+  recordAudit({
+    kind: 'standing_order_paused',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Paused standing order ${standingOrder.id}. ${reason}`,
+    referenceId: standingOrder.id,
+  });
+  persistStateSoon();
+
+  res.json({ standingOrder, pause, standingOrders, standingOrderPauses });
+});
+
+app.post('/standing-orders/:id/resume', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const standingOrder = standingOrders.find((entry) => entry.id === id);
+  if (!standingOrder) {
+    res.status(404).json({ error: 'Standing order not found' });
+    return;
+  }
+
+  if (standingOrder.status === 'cancelled') {
+    res.status(400).json({ error: 'Cannot resume a cancelled standing order' });
+    return;
+  }
+
+  const openPause = standingOrderPauses.find((pause) => pause.standingOrderId === standingOrder.id && pause.endDate === null);
+  if (openPause) {
+    openPause.endDate = todayIsoDate();
+  }
+
+  standingOrder.status = 'active';
+  standingOrder.updatedAt = new Date().toISOString();
+  recordAudit({
+    kind: 'standing_order_resumed',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Resumed standing order ${standingOrder.id}.`,
+    referenceId: standingOrder.id,
+  });
+  persistStateSoon();
+
+  res.json({ standingOrder, standingOrders, standingOrderPauses });
+});
+
+app.post('/standing-orders/generate-runs', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'production', 'support']), (req, res) => {
+  const body = req.body as { serviceDate?: string };
+  const serviceDate = body.serviceDate?.trim() || todayIsoDate();
+  const result = generateStandingOrderRuns(serviceDate, req.session?.user.role ?? 'system');
+  persistStateSoon();
+  res.json(result);
 });
 
 app.get('/orders', (_req, res) => {
@@ -1266,6 +1514,7 @@ function buildCustomer360(customerId: string): Customer360Response {
   const auth = customerAuthRecords.find((entry) => entry.customerId === customer.id && entry.active !== false);
   const notes = customerNotes.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const supportCasesForCustomer = supportCases.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.lastUpdatedAt.localeCompare(left.lastUpdatedAt));
+  const standingOrdersForCustomer = standingOrders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const timeline = buildCustomerTimeline(customer.id);
   return {
     customer,
@@ -1286,6 +1535,7 @@ function buildCustomer360(customerId: string): Customer360Response {
     notes,
     timeline,
     supportCases: supportCasesForCustomer,
+    standingOrders: standingOrdersForCustomer,
     orders: orders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
   };
 }
@@ -1342,6 +1592,33 @@ function buildCustomerTimeline(customerId: string): CustomerTimelineEvent[] {
       referenceId: supportCase.id,
       summary: `Support case ${supportCase.subject} is ${supportCase.status}.`,
       createdAt: supportCase.lastUpdatedAt,
+    });
+  }
+
+  for (const standingOrder of standingOrders.filter((entry) => entry.customerId === customerId)) {
+    events.push({
+      id: `timeline_standing_order_${standingOrder.id}`,
+      customerId,
+      eventType: 'standing_order_updated',
+      referenceId: standingOrder.id,
+      summary: `Standing order ${standingOrder.id} is ${standingOrder.status}.`,
+      createdAt: standingOrder.updatedAt,
+    });
+  }
+
+  for (const pause of standingOrderPauses) {
+    const standingOrder = standingOrders.find((entry) => entry.id === pause.standingOrderId);
+    if (standingOrder?.customerId !== customerId) {
+      continue;
+    }
+
+    events.push({
+      id: `timeline_pause_${pause.id}`,
+      customerId,
+      eventType: 'standing_order_paused',
+      referenceId: pause.id,
+      summary: `Standing order paused: ${pause.reason}`,
+      createdAt: pause.createdAt,
     });
   }
 
@@ -1566,6 +1843,159 @@ function getZoneDate(timeZone: string) {
   };
 }
 
+function todayIsoDate() {
+  return getZoneDate('Asia/Kolkata').date;
+}
+
+function normalizeDeliveryDays(days: number[]) {
+  return [...new Set(days.map((day) => Math.trunc(day)).filter((day) => day >= 0 && day <= 6))].sort((left, right) => left - right);
+}
+
+function sanitizeStandingOrderItems(items: Array<{ productId: string; quantity: number }>) {
+  return items
+    .map((item) => ({
+      productId: item.productId.trim(),
+      quantity: Math.max(1, Math.trunc(item.quantity)),
+    }))
+    .filter((item) => Boolean(item.productId) && item.quantity > 0);
+}
+
+function getIsoWeekday(serviceDate: string) {
+  const date = new Date(`${serviceDate}T12:00:00Z`);
+  return date.getUTCDay();
+}
+
+function isStandingOrderPausedOnDate(standingOrderId: string, serviceDate: string) {
+  return standingOrderPauses.some(
+    (pause) =>
+      pause.standingOrderId === standingOrderId &&
+      pause.startDate <= serviceDate &&
+      (pause.endDate === null || pause.endDate >= serviceDate),
+  );
+}
+
+function generateStandingOrderRuns(serviceDate: string, actor: string) {
+  const generatedRuns: StandingOrderRun[] = [];
+  const skippedRuns: StandingOrderRun[] = [];
+  const generatedOrders: Order[] = [];
+  const weekday = getIsoWeekday(serviceDate);
+
+  for (const standingOrder of standingOrders) {
+    const existingRun = standingOrderRuns.find(
+      (run) => run.standingOrderId === standingOrder.id && run.serviceDate === serviceDate,
+    );
+    if (existingRun) {
+      continue;
+    }
+
+    const customer = customers.find((entry) => entry.id === standingOrder.customerId);
+    const slot = slots.find((entry) => entry.id === standingOrder.schedule.slotId && entry.serviceDate === serviceDate);
+    const pausedOnDate = isStandingOrderPausedOnDate(standingOrder.id, serviceDate);
+    let reason = '';
+    let status: StandingOrderRun['status'] = 'generated';
+    let generatedOrderId: string | null = null;
+
+    if (!customer) {
+      status = 'failed';
+      reason = 'Customer record not found.';
+    } else if (standingOrder.status !== 'active') {
+      status = 'skipped';
+      reason = `Standing order is ${standingOrder.status}.`;
+    } else if (pausedOnDate) {
+      status = 'skipped';
+      reason = 'Standing order is paused for this date.';
+    } else if (!standingOrder.schedule.deliveryDays.includes(weekday)) {
+      status = 'skipped';
+      reason = 'Standing order does not run on this weekday.';
+    } else if (!slot) {
+      status = 'failed';
+      reason = `No delivery slot found for ${standingOrder.schedule.slotId} on ${serviceDate}.`;
+    } else {
+      const orderItems = standingOrder.schedule.items
+        .map((item) => {
+          const product = products.find((entry) => entry.id === item.productId);
+          if (!product) {
+            return null;
+          }
+          return {
+            productId: item.productId,
+            quantity: item.quantity,
+            unitPrice: product.unitPrice,
+          };
+        })
+        .filter((item): item is { productId: string; quantity: number; unitPrice: number } => Boolean(item));
+
+      if (orderItems.length !== standingOrder.schedule.items.length) {
+        status = 'failed';
+        reason = 'One or more standing order items are invalid.';
+      } else {
+        const amountTotal = recalculateItemsTotal(orderItems);
+        const exposureAmount = standingOrder.schedule.paymentMode === 'credit' ? amountTotal : standingOrder.schedule.paymentMode === 'part-pay' ? Math.ceil(amountTotal / 2) : 0;
+
+        if (standingOrder.schedule.paymentMode !== 'prepaid' && customer.outstandingBalance + exposureAmount > customer.creditLimit) {
+          status = 'failed';
+          reason = `Credit limit blocked standing order generation.`;
+        } else {
+          const order: Order = {
+            id: `ord_${crypto.randomUUID()}`,
+            customerId: customer.id,
+            serviceDate,
+            slotId: slot.id,
+            paymentMode: standingOrder.schedule.paymentMode,
+            status: 'confirmed',
+            source: 'standing_order',
+            amountTotal,
+            createdAt: new Date().toISOString(),
+            items: orderItems,
+          };
+
+          orders.unshift(order);
+          generatedOrders.push(order);
+          generatedOrderId = order.id;
+          if (exposureAmount > 0) {
+            customer.outstandingBalance += exposureAmount;
+            refreshCustomerRisk(customer);
+          }
+          recordAudit({
+            kind: 'standing_order_run_generated',
+            actor,
+            summary: `Generated standing order run ${standingOrder.id} into order ${order.id} for ${serviceDate}.`,
+            referenceId: order.id,
+          });
+        }
+      }
+    }
+
+    const run: StandingOrderRun = {
+      id: `sor_${crypto.randomUUID()}`,
+      standingOrderId: standingOrder.id,
+      serviceDate,
+      status,
+      generatedOrderId,
+      reason: reason || undefined,
+      createdAt: new Date().toISOString(),
+    };
+    standingOrderRuns.unshift(run);
+    if (status === 'generated') {
+      generatedRuns.push(run);
+    } else {
+      skippedRuns.push(run);
+    }
+  }
+
+  if (generatedOrders.length > 0) {
+    rebuildOperationalState();
+  }
+
+  return {
+    serviceDate,
+    generatedRuns,
+    skippedRuns,
+    generatedOrders,
+    standingOrderRuns,
+  };
+}
+
 function parseClockToMinutes(value: string) {
   const [hours, minutes] = value.split(':').map((entry) => Number(entry));
   if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
@@ -1592,6 +2022,9 @@ async function persistState() {
     customerAuthRecords,
     customerNotes,
     supportCases,
+    standingOrders,
+    standingOrderRuns,
+    standingOrderPauses,
     products,
     capacities,
     slots,
@@ -1618,6 +2051,9 @@ async function loadState(): Promise<ApiStateSnapshot> {
       customerAuthRecords: parsed.customerAuthRecords ?? customerAuthRecords,
       customerNotes: parsed.customerNotes ?? customerNotes,
       supportCases: parsed.supportCases ?? supportCases,
+      standingOrders: parsed.standingOrders ?? standingOrders,
+      standingOrderRuns: parsed.standingOrderRuns ?? standingOrderRuns,
+      standingOrderPauses: parsed.standingOrderPauses ?? standingOrderPauses,
       products: parsed.products ?? products,
       capacities: parsed.capacities ?? capacities,
       slots: parsed.slots ?? slots,
@@ -1647,6 +2083,9 @@ async function loadState(): Promise<ApiStateSnapshot> {
       customerAuthRecords,
       customerNotes,
       supportCases,
+      standingOrders,
+      standingOrderRuns,
+      standingOrderPauses,
       products,
       capacities,
       slots,
@@ -1676,6 +2115,9 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   customerAuthRecords.splice(0, customerAuthRecords.length, ...snapshot.customerAuthRecords);
   customerNotes.splice(0, customerNotes.length, ...snapshot.customerNotes);
   supportCases.splice(0, supportCases.length, ...snapshot.supportCases);
+  standingOrders.splice(0, standingOrders.length, ...snapshot.standingOrders);
+  standingOrderRuns.splice(0, standingOrderRuns.length, ...snapshot.standingOrderRuns);
+  standingOrderPauses.splice(0, standingOrderPauses.length, ...snapshot.standingOrderPauses);
   products.splice(0, products.length, ...snapshot.products);
   capacities.splice(0, capacities.length, ...snapshot.capacities);
   slots.splice(0, slots.length, ...snapshot.slots);

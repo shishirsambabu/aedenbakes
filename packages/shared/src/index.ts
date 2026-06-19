@@ -111,6 +111,11 @@ export interface AuditEvent {
     | 'customer_note_added'
     | 'support_case_opened'
     | 'support_case_updated'
+    | 'standing_order_created'
+    | 'standing_order_updated'
+    | 'standing_order_paused'
+    | 'standing_order_resumed'
+    | 'standing_order_run_generated'
     | 'erp_sync_triggered'
     | 'erp_sync_completed'
     | 'approval_queued'
@@ -208,6 +213,11 @@ export interface CustomerTimelineEvent {
     | 'order_returned'
     | 'support_case_opened'
     | 'support_case_updated'
+    | 'standing_order_created'
+    | 'standing_order_updated'
+    | 'standing_order_paused'
+    | 'standing_order_resumed'
+    | 'standing_order_run_generated'
     | 'note_added'
     | 'account_flagged'
     | 'delivery_exception';
@@ -240,12 +250,54 @@ export interface SupportCaseMessage {
   createdAt: string;
 }
 
+export interface StandingOrderItem {
+  productId: string;
+  quantity: number;
+}
+
+export interface StandingOrderSchedule {
+  deliveryDays: number[];
+  slotId: string;
+  paymentMode: PaymentMode;
+  items: StandingOrderItem[];
+  notes?: string;
+}
+
+export interface StandingOrder {
+  id: string;
+  customerId: string;
+  status: 'draft' | 'active' | 'paused' | 'cancelled';
+  schedule: StandingOrderSchedule;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StandingOrderRun {
+  id: string;
+  standingOrderId: string;
+  serviceDate: string;
+  status: 'generated' | 'skipped' | 'failed';
+  generatedOrderId: string | null;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface StandingOrderPause {
+  id: string;
+  standingOrderId: string;
+  startDate: string;
+  endDate: string | null;
+  reason: string;
+  createdAt: string;
+}
+
 export interface Customer360Response {
   customer: CustomerAccount;
   auth: CustomerPortalAuthRecord | null;
   notes: CustomerNote[];
   timeline: CustomerTimelineEvent[];
   supportCases: SupportCase[];
+  standingOrders: StandingOrder[];
   orders: Order[];
 }
 

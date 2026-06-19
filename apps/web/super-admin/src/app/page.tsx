@@ -103,11 +103,57 @@ type CustomerTimelineEvent = {
     | 'order_returned'
     | 'support_case_opened'
     | 'support_case_updated'
+    | 'standing_order_created'
+    | 'standing_order_updated'
+    | 'standing_order_paused'
+    | 'standing_order_resumed'
+    | 'standing_order_run_generated'
     | 'note_added'
     | 'account_flagged'
     | 'delivery_exception';
   referenceId: string;
   summary: string;
+  createdAt: string;
+};
+
+type StandingOrderItem = {
+  productId: string;
+  quantity: number;
+};
+
+type StandingOrderSchedule = {
+  deliveryDays: number[];
+  slotId: string;
+  paymentMode: 'prepaid' | 'part-pay' | 'credit';
+  items: StandingOrderItem[];
+  notes?: string;
+};
+
+type StandingOrder = {
+  id: string;
+  customerId: string;
+  status: 'draft' | 'active' | 'paused' | 'cancelled';
+  schedule: StandingOrderSchedule;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StandingOrderRun = {
+  id: string;
+  standingOrderId: string;
+  serviceDate: string;
+  status: 'generated' | 'skipped' | 'failed';
+  generatedOrderId: string | null;
+  reason?: string;
+  createdAt: string;
+};
+
+type StandingOrderPause = {
+  id: string;
+  standingOrderId: string;
+  startDate: string;
+  endDate: string | null;
+  reason: string;
   createdAt: string;
 };
 
@@ -142,6 +188,7 @@ type Customer360Response = {
   notes: CustomerNote[];
   timeline: CustomerTimelineEvent[];
   supportCases: SupportCase[];
+  standingOrders: StandingOrder[];
   orders: Order[];
 };
 
@@ -150,11 +197,16 @@ type AuditEvent = {
   kind:
     | 'order_adjusted'
     | 'return_captured'
-    | 'erp_sync_triggered'
-    | 'erp_sync_completed'
-    | 'approval_queued'
-    | 'approval_approved'
-    | 'approval_rejected';
+  | 'erp_sync_triggered'
+  | 'erp_sync_completed'
+  | 'approval_queued'
+  | 'approval_approved'
+  | 'approval_rejected'
+  | 'standing_order_created'
+  | 'standing_order_updated'
+  | 'standing_order_paused'
+  | 'standing_order_resumed'
+  | 'standing_order_run_generated';
   actor: string;
   summary: string;
   referenceId: string;
@@ -241,6 +293,9 @@ type AppState = {
   erpSyncStatus: ErpSyncStatus | null;
   approvals: ApprovalRequest[];
   supportCases: SupportCase[];
+  standingOrders: StandingOrder[];
+  standingOrderRuns: StandingOrderRun[];
+  standingOrderPauses: StandingOrderPause[];
   erpContractPreview: VasyErpContractPreview | null;
 };
 
@@ -254,6 +309,9 @@ const initialAppState: AppState = {
   erpSyncStatus: null,
   approvals: [],
   supportCases: [],
+  standingOrders: [],
+  standingOrderRuns: [],
+  standingOrderPauses: [],
   erpContractPreview: null,
 };
 
@@ -268,6 +326,13 @@ export default function Home() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer360Response | null>(null);
   const [supportCaseDraft, setSupportCaseDraft] = useState('');
   const [supportNoteDraft, setSupportNoteDraft] = useState('');
+  const [standingOrderCustomerId, setStandingOrderCustomerId] = useState('cust_cafe_nook');
+  const [standingOrderSlotId, setStandingOrderSlotId] = useState('slot_morning');
+  const [standingOrderDaysDraft, setStandingOrderDaysDraft] = useState('1,2,3,4,5');
+  const [standingOrderPaymentMode, setStandingOrderPaymentMode] = useState<'prepaid' | 'part-pay' | 'credit'>('credit');
+  const [standingOrderItemsDraft, setStandingOrderItemsDraft] = useState('[{"productId":"prod_loaf","quantity":12}]');
+  const [standingOrderNotesDraft, setStandingOrderNotesDraft] = useState('Weekday breakfast repeat.');
+  const [standingOrderRunDate, setStandingOrderRunDate] = useState(new Date().toISOString().slice(0, 10));
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -308,12 +373,13 @@ export default function Home() {
   }
 
   async function refreshAppState(sessionToken = token, canSyncErp = session?.permissions.canSyncErp ?? false) {
-    const [customersRes, catalogRes, ordersRes, operationsRes, supportRes] = await Promise.all([
+    const [customersRes, catalogRes, ordersRes, operationsRes, supportRes, standingRes] = await Promise.all([
       fetch(`${API_BASE_URL}/customers`),
       fetch(`${API_BASE_URL}/catalog`),
       fetch(`${API_BASE_URL}/orders`),
       sessionToken ? fetch(`${API_BASE_URL}/admin/operations`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
       sessionToken ? fetch(`${API_BASE_URL}/support/cases`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+      sessionToken ? fetch(`${API_BASE_URL}/standing-orders`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
     ]);
 
     if (!customersRes.ok || !catalogRes.ok || !ordersRes.ok) {
@@ -329,6 +395,9 @@ export default function Home() {
     let auditEvents: AuditEvent[] = [];
     let approvals: ApprovalRequest[] = [];
     let supportCases: SupportCase[] = [];
+    let standingOrders: StandingOrder[] = [];
+    let standingOrderRuns: StandingOrderRun[] = [];
+    let standingOrderPauses: StandingOrderPause[] = [];
     let erpSyncStatus: ErpSyncStatus | null = null;
     let erpContractPreview: VasyErpContractPreview | null = null;
 
@@ -350,6 +419,16 @@ export default function Home() {
       supportCases = supportJson.supportCases ?? [];
     }
 
+    if (standingRes) {
+      if (!standingRes.ok) {
+        throw new Error('Could not refresh recurring orders.');
+      }
+      const standingJson = await standingRes.json();
+      standingOrders = standingJson.standingOrders ?? [];
+      standingOrderRuns = standingJson.standingOrderRuns ?? [];
+      standingOrderPauses = standingJson.standingOrderPauses ?? [];
+    }
+
     if (sessionToken && canSyncErp) {
       const contractResponse = await fetch(`${API_BASE_URL}/erp/vasy/contract`, {
         headers: authHeaders(sessionToken),
@@ -369,6 +448,9 @@ export default function Home() {
       erpSyncStatus,
       approvals,
       supportCases,
+      standingOrders,
+      standingOrderRuns,
+      standingOrderPauses,
       erpContractPreview,
     });
   }
@@ -418,7 +500,7 @@ export default function Home() {
 
   async function performAction(
     endpoint: string,
-    body: Record<string, string | number>,
+    body: Record<string, unknown>,
     successMessage: string,
   ) {
     if (!token) {
@@ -501,6 +583,72 @@ export default function Home() {
     await loadCustomerDetail(selectedCustomer.customer.id);
   }
 
+  async function createStandingOrder() {
+    if (!token) {
+      return;
+    }
+
+    const customerId = standingOrderCustomerId.trim();
+    const slotId = standingOrderSlotId.trim();
+    const days = standingOrderDaysDraft
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value));
+
+    let items: Array<{ productId: string; quantity: number }>;
+    try {
+      items = JSON.parse(standingOrderItemsDraft) as Array<{ productId: string; quantity: number }>;
+    } catch {
+      throw new Error('Standing order items must be valid JSON.');
+    }
+
+    await performAction(
+      '/standing-orders',
+      {
+        customerId,
+        status: 'draft',
+        deliveryDays: days,
+        slotId,
+        paymentMode: standingOrderPaymentMode,
+        items,
+        notes: standingOrderNotesDraft.trim(),
+      },
+      'Standing order created.',
+    );
+  }
+
+  async function updateStandingOrderStatus(standingOrderId: string, nextStatus: 'paused' | 'active') {
+    if (!token) {
+      return;
+    }
+
+    if (nextStatus === 'paused') {
+      await performAction(
+        `/standing-orders/${standingOrderId}/pause`,
+        {
+          reason: 'Paused from super admin portal.',
+          startDate: standingOrderRunDate,
+        },
+        'Standing order paused.',
+      );
+      return;
+    }
+
+    await performAction(`/standing-orders/${standingOrderId}/resume`, {}, 'Standing order resumed.');
+  }
+
+  async function generateStandingOrderRuns() {
+    if (!token) {
+      return;
+    }
+
+    await performAction(
+      '/standing-orders/generate-runs',
+      { serviceDate: standingOrderRunDate },
+      'Recurring order runs generated.',
+    );
+  }
+
   if (loadingAuth) {
     return <LoadingScreen message="Checking session..." />;
   }
@@ -521,7 +669,21 @@ export default function Home() {
   }
 
   const roleLabel = session.user.role;
-  const { customers, products, capacities, slots, orders, auditEvents, erpSyncStatus, approvals, supportCases, erpContractPreview } = appState;
+  const {
+    customers,
+    products,
+    capacities,
+    slots,
+    orders,
+    auditEvents,
+    erpSyncStatus,
+    approvals,
+    supportCases,
+    standingOrders,
+    standingOrderRuns,
+    standingOrderPauses,
+    erpContractPreview,
+  } = appState;
   const latestEvents = auditEvents.slice(0, 4);
   const selectedCustomerOrders = selectedCustomer?.orders ?? [];
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
@@ -721,54 +883,161 @@ export default function Home() {
             ) : null}
 
             {visibleSection === 'operations' ? (
-              <Card title="Control actions" subtitle="Only permitted roles can use these levers.">
-                <div className="space-y-3">
-                  <ActionButton
-                    enabled={permissions.canEditOrders && Boolean(orders[0])}
-                    label="Edit order quantity"
-                    onClick={() => {
-                      if (!orders[0]) return;
-                      performAction(
-                        `/admin/orders/${orders[0].id}/adjust`,
-                        {
-                          actor: session.user.role,
-                          productId: orders[0].items[0]?.productId ?? '',
-                          quantityDelta: -2,
-                          note: 'Adjusted from admin portal.',
-                        },
-                        'Order adjustment recorded and production state refreshed.',
-                      ).catch((actionError) => setError((actionError as Error).message));
-                    }}
-                  />
-                  <ActionButton
-                    enabled={permissions.canCaptureReturns && Boolean(orders[0])}
-                    label="Register return"
-                    onClick={() => {
-                      if (!orders[0]) return;
-                      performAction(
-                        `/admin/orders/${orders[0].id}/returns`,
-                        {
-                          actor: session.user.role,
-                          quantity: 3,
-                          note: 'Return captured from failed doorstep delivery.',
-                        },
-                        'Return captured and audit trail updated.',
-                      ).catch((actionError) => setError((actionError as Error).message));
-                    }}
-                  />
-                  <ActionButton
-                    enabled={permissions.canSyncErp}
-                    label="Trigger ERP sync"
-                    onClick={() => {
-                      performAction(
-                        '/erp/sync/trigger',
-                        { actor: session.user.role },
-                        'Vasy ERP sync triggered and completed.',
-                      ).catch((actionError) => setError((actionError as Error).message));
-                    }}
-                  />
-                </div>
-              </Card>
+              <div className="space-y-6">
+                <Card title="Control actions" subtitle="Only permitted roles can use these levers.">
+                  <div className="space-y-3">
+                    <ActionButton
+                      enabled={permissions.canEditOrders && Boolean(orders[0])}
+                      label="Edit order quantity"
+                      onClick={() => {
+                        if (!orders[0]) return;
+                        performAction(
+                          `/admin/orders/${orders[0].id}/adjust`,
+                          {
+                            actor: session.user.role,
+                            productId: orders[0].items[0]?.productId ?? '',
+                            quantityDelta: -2,
+                            note: 'Adjusted from admin portal.',
+                          },
+                          'Order adjustment recorded and production state refreshed.',
+                        ).catch((actionError) => setError((actionError as Error).message));
+                      }}
+                    />
+                    <ActionButton
+                      enabled={permissions.canCaptureReturns && Boolean(orders[0])}
+                      label="Register return"
+                      onClick={() => {
+                        if (!orders[0]) return;
+                        performAction(
+                          `/admin/orders/${orders[0].id}/returns`,
+                          {
+                            actor: session.user.role,
+                            quantity: 3,
+                            note: 'Return captured from failed doorstep delivery.',
+                          },
+                          'Return captured and audit trail updated.',
+                        ).catch((actionError) => setError((actionError as Error).message));
+                      }}
+                    />
+                    <ActionButton
+                      enabled={permissions.canSyncErp}
+                      label="Trigger ERP sync"
+                      onClick={() => {
+                        performAction(
+                          '/erp/sync/trigger',
+                          { actor: session.user.role },
+                          'Vasy ERP sync triggered and completed.',
+                        ).catch((actionError) => setError((actionError as Error).message));
+                      }}
+                    />
+                  </div>
+                </Card>
+
+                <Card title="Recurring orders" subtitle="Create standing demand, pause it, or batch-generate runs.">
+                  <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field label="Customer" value={standingOrderCustomerId} onChange={setStandingOrderCustomerId} />
+                      <Field label="Slot" value={standingOrderSlotId} onChange={setStandingOrderSlotId} />
+                      <Field
+                        label="Days"
+                        value={standingOrderDaysDraft}
+                        onChange={setStandingOrderDaysDraft}
+                        placeholder="1,2,3,4,5"
+                      />
+                      <label className="grid gap-2">
+                        <span className="text-xs font-black uppercase tracking-[0.18em] text-stone-500">
+                          Payment mode
+                        </span>
+                        <select
+                          value={standingOrderPaymentMode}
+                          onChange={(event) =>
+                            setStandingOrderPaymentMode(event.target.value as 'prepaid' | 'part-pay' | 'credit')
+                          }
+                          className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none focus:border-orange-500"
+                        >
+                          <option value="prepaid">prepaid</option>
+                          <option value="part-pay">part-pay</option>
+                          <option value="credit">credit</option>
+                        </select>
+                      </label>
+                    </div>
+                    <Field
+                      label="Items JSON"
+                      value={standingOrderItemsDraft}
+                      onChange={setStandingOrderItemsDraft}
+                      placeholder='[{"productId":"prod_loaf","quantity":12}]'
+                    />
+                    <Field
+                      label="Notes"
+                      value={standingOrderNotesDraft}
+                      onChange={setStandingOrderNotesDraft}
+                      placeholder="Weekday breakfast repeat."
+                    />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Field label="Run date" value={standingOrderRunDate} onChange={setStandingOrderRunDate} type="date" />
+                      <div className="flex items-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            createStandingOrder().catch((actionError) => setError((actionError as Error).message));
+                          }}
+                          className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white"
+                        >
+                          Create standing order
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            generateStandingOrderRuns().catch((actionError) => setError((actionError as Error).message));
+                          }}
+                          className="rounded-2xl bg-orange-700 px-4 py-3 text-sm font-bold text-white"
+                        >
+                          Generate runs
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      {standingOrders.length > 0 ? (
+                        standingOrders.slice(0, 6).map((standingOrder) => (
+                          <div key={standingOrder.id} className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="font-semibold text-stone-950">{standingOrder.id}</div>
+                                <div className="text-xs text-stone-500">
+                                  {customers.find((customer) => customer.id === standingOrder.customerId)?.name ?? standingOrder.customerId}
+                                </div>
+                              </div>
+                              <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{standingOrder.status}</div>
+                            </div>
+                            <div className="mt-2 text-sm text-stone-600">
+                              Days {standingOrder.schedule.deliveryDays.join(', ')} | slot {standingOrder.schedule.slotId}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateStandingOrderStatus(
+                                    standingOrder.id,
+                                    standingOrder.status === 'paused' ? 'active' : 'paused',
+                                  ).catch((actionError) => setError((actionError as Error).message));
+                                }}
+                                className="rounded-full bg-stone-950 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white"
+                              >
+                                {standingOrder.status === 'paused' ? 'Resume' : 'Pause'}
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <GateMessage message="No standing orders are configured yet." />
+                      )}
+                    </div>
+                    <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-600">
+                      Runs created: {standingOrderRuns.length} | Pauses: {standingOrderPauses.length}
+                    </div>
+                  </div>
+                </Card>
+              </div>
             ) : null}
           </div>
 
@@ -870,6 +1139,34 @@ export default function Home() {
                         Open case
                       </button>
                     </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="text-sm font-bold uppercase tracking-[0.18em] text-stone-400">
+                      Standing orders
+                    </div>
+                    {selectedCustomer.standingOrders.length > 0 ? (
+                      selectedCustomer.standingOrders.map((standingOrder) => (
+                        <div key={standingOrder.id} className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-stone-950">{standingOrder.id}</div>
+                              <div className="text-xs text-stone-500">
+                                {standingOrder.schedule.slotId} | {standingOrder.schedule.paymentMode}
+                              </div>
+                            </div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-stone-500">
+                              {standingOrder.status}
+                            </div>
+                          </div>
+                          <div className="mt-2 text-sm text-stone-600">
+                            Days {standingOrder.schedule.deliveryDays.join(', ')} | {standingOrder.schedule.items.length} line(s)
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <GateMessage message="No standing orders are set up for this account." />
+                    )}
                   </div>
 
                   <div className="space-y-3">

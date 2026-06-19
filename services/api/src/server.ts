@@ -14,7 +14,10 @@ import {
 import type {
   AuditEvent,
   CustomerAccount,
+  Customer360Response,
   CustomerDashboardResponse,
+  CustomerNote,
+  CustomerTimelineEvent,
   CustomerOnboardingRequest,
   CustomerOrderCreateRequest,
   CustomerPortalAuthRecord,
@@ -29,6 +32,7 @@ import type {
   Product,
   ProductDayCapacity,
   ProductionBatchLine,
+  SupportCase,
   VasyErpContractPreview,
   VasyErpPushResult,
 } from '@aeden-bakes/shared';
@@ -104,6 +108,8 @@ type DeliveryWritebackEvent = {
 type ApiStateSnapshot = {
   customers: typeof customers;
   customerAuthRecords: AuthRecord[];
+  customerNotes: CustomerNote[];
+  supportCases: SupportCase[];
   products: typeof products;
   capacities: typeof capacities;
   slots: typeof slots;
@@ -162,6 +168,39 @@ const stateFilePath = join(process.cwd(), 'data', 'api-state.json');
 const sessions = new Map<string, Session>();
 let auditEvents: AuditEvent[] = [];
 let approvals: ApprovalRequest[] = [];
+let customerNotes: CustomerNote[] = [
+  {
+    id: 'note_cafe_nook_1',
+    customerId: 'cust_cafe_nook',
+    noteType: 'support',
+    note: 'Prefers morning drops before 8:00 AM.',
+    createdBy: 'support',
+    createdAt: '2026-06-19T08:10:00+05:30',
+  },
+  {
+    id: 'note_hotel_lotus_1',
+    customerId: 'cust_hotel_lotus',
+    noteType: 'accounts',
+    note: 'Watch for part-pay requests during month end.',
+    createdBy: 'accounts',
+    createdAt: '2026-06-19T08:12:00+05:30',
+  },
+];
+let supportCases: SupportCase[] = [
+  {
+    id: 'case_cafe_nook_1',
+    customerId: 'cust_cafe_nook',
+    orderId: 'AB-1041',
+    status: 'investigating',
+    priority: 'medium',
+    subject: 'Confirm tomorrow morning drop and loaf count',
+    openedBy: 'support',
+    assignedTo: 'support',
+    createdAt: '2026-06-19T08:00:00+05:30',
+    closedAt: null,
+    lastUpdatedAt: '2026-06-19T08:10:00+05:30',
+  },
+];
 const processedDeliveryEventIds = new Set<string>();
 let erpSyncStatus: ErpSyncStatus = {
   provider: 'vasy',
@@ -495,7 +534,8 @@ app.get('/customers', (_req, res) => {
 });
 
 app.get('/customers/:id', (req, res) => {
-  const customer = customers.find((entry) => entry.id === req.params.id);
+  const customerId = readRouteParam(req.params.id);
+  const customer = customers.find((entry) => entry.id === customerId);
   if (!customer) {
     res.status(404).json({ error: 'Customer not found' });
     return;
@@ -506,6 +546,139 @@ app.get('/customers/:id', (req, res) => {
     orders: orders.filter((entry) => entry.customerId === customer.id),
     productionBatches,
   });
+});
+
+app.get('/customers/:id/360', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const customerId = readRouteParam(req.params.id);
+  const snapshot = buildCustomer360(customerId);
+  res.json(snapshot);
+});
+
+app.get('/support/cases', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
+  res.json({
+    supportCases,
+  });
+});
+
+app.post('/support/cases', authenticate, requireAnyRole(['owner', 'manager', 'support']), (req, res) => {
+  const { customerId, orderId, subject, priority = 'medium', assignedTo = req.session?.user.role ?? 'support' } = req.body as {
+    customerId?: string;
+    orderId?: string;
+    subject?: string;
+    priority?: SupportCase['priority'];
+    assignedTo?: string;
+  };
+
+  if (!customerId || !subject?.trim()) {
+    res.status(400).json({ error: 'customerId and subject are required' });
+    return;
+  }
+
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const supportCase: SupportCase = {
+    id: `case_${crypto.randomUUID()}`,
+    customerId,
+    orderId: orderId?.trim() || undefined,
+    status: 'open',
+    priority: priority ?? 'medium',
+    subject: subject.trim(),
+    openedBy: req.session?.user.role ?? 'support',
+    assignedTo: assignedTo ?? null,
+    createdAt: now,
+    closedAt: null,
+    lastUpdatedAt: now,
+  };
+
+  supportCases.unshift(supportCase);
+  recordAudit({
+    kind: 'support_case_opened',
+    actor: req.session?.user.role ?? 'support',
+    summary: `Opened support case ${supportCase.id} for ${customerId}. ${supportCase.subject}`,
+    referenceId: supportCase.id,
+  });
+  persistStateSoon();
+
+  res.status(201).json({ supportCase, supportCases, customer: buildCustomer360(customerId) });
+});
+
+app.post('/support/cases/:id/transition', authenticate, requireAnyRole(['owner', 'manager', 'support']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const { status, note } = req.body as { status?: SupportCase['status']; note?: string };
+  const supportCase = supportCases.find((entry) => entry.id === id);
+  if (!supportCase) {
+    res.status(404).json({ error: 'Support case not found' });
+    return;
+  }
+
+  const allowedTransitions: Record<SupportCase['status'], SupportCase['status'][]> = {
+    open: ['investigating', 'waiting_customer', 'waiting_internal', 'resolved', 'escalated', 'closed'],
+    investigating: ['waiting_customer', 'waiting_internal', 'resolved', 'escalated', 'closed'],
+    waiting_customer: ['investigating', 'resolved', 'closed', 'escalated'],
+    waiting_internal: ['investigating', 'resolved', 'closed', 'escalated'],
+    resolved: ['closed', 'investigating'],
+    closed: [],
+    escalated: ['investigating', 'resolved', 'closed'],
+  };
+
+  if (!status || !allowedTransitions[supportCase.status].includes(status)) {
+    res.status(400).json({ error: `Cannot move support case from ${supportCase.status} to ${status ?? 'unknown'}` });
+    return;
+  }
+
+  supportCase.status = status;
+  supportCase.lastUpdatedAt = new Date().toISOString();
+  if (status === 'closed') {
+    supportCase.closedAt = supportCase.closedAt ?? supportCase.lastUpdatedAt;
+  }
+  recordAudit({
+    kind: 'support_case_updated',
+    actor: req.session?.user.role ?? 'support',
+    summary: `Support case ${supportCase.id} moved to ${status}. ${note ?? ''}`.trim(),
+    referenceId: supportCase.id,
+  });
+  persistStateSoon();
+
+  res.json({ supportCase, supportCases, customer: buildCustomer360(supportCase.customerId) });
+});
+
+app.post('/customers/:id/notes', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const { note, noteType = 'general' } = req.body as { note?: string; noteType?: CustomerNote['noteType'] };
+  const customer = customers.find((entry) => entry.id === id);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  if (!note?.trim()) {
+    res.status(400).json({ error: 'note is required' });
+    return;
+  }
+
+  const customerNote: CustomerNote = {
+    id: `note_${crypto.randomUUID()}`,
+    customerId: id,
+    noteType,
+    note: note.trim(),
+    createdBy: req.session?.user.role ?? 'support',
+    createdAt: new Date().toISOString(),
+  };
+  customerNotes.unshift(customerNote);
+  recordAudit({
+    kind: 'customer_note_added',
+    actor: req.session?.user.role ?? 'support',
+    summary: `Added customer note for ${id}. ${customerNote.note}`,
+    referenceId: customerNote.id,
+  });
+  persistStateSoon();
+
+  res.status(201).json({ note: customerNote, customer: buildCustomer360(id) });
 });
 
 app.get('/orders', (_req, res) => {
@@ -1084,6 +1257,111 @@ function buildCustomerDashboard(customerId: string): CustomerDashboardResponse {
   };
 }
 
+function buildCustomer360(customerId: string): Customer360Response {
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    throw new Error(`Customer ${customerId} not found`);
+  }
+
+  const auth = customerAuthRecords.find((entry) => entry.customerId === customer.id && entry.active !== false);
+  const notes = customerNotes.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const supportCasesForCustomer = supportCases.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.lastUpdatedAt.localeCompare(left.lastUpdatedAt));
+  const timeline = buildCustomerTimeline(customer.id);
+  return {
+    customer,
+    auth: auth
+      ? {
+          id: auth.id,
+          customerId: auth.customerId ?? customer.id,
+          loginId: auth.username,
+          displayName: auth.displayName,
+          active: auth.active !== false,
+          createdAt: auth.createdAt ?? auth.updatedAt ?? new Date().toISOString(),
+          updatedAt: auth.updatedAt ?? auth.createdAt ?? new Date().toISOString(),
+          defaultAddress: auth.defaultAddress,
+          deliveryZone: auth.deliveryZone,
+          phone: auth.phone,
+        }
+      : null,
+    notes,
+    timeline,
+    supportCases: supportCasesForCustomer,
+    orders: orders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+  };
+}
+
+function readRouteParam(param: string | string[] | undefined): string {
+  if (Array.isArray(param)) {
+    return param[0] ?? '';
+  }
+
+  return param ?? '';
+}
+
+function buildCustomerTimeline(customerId: string): CustomerTimelineEvent[] {
+  const events: CustomerTimelineEvent[] = [];
+
+  for (const order of orders.filter((entry) => entry.customerId === customerId)) {
+    events.push({
+      id: `timeline_order_${order.id}`,
+      customerId,
+      eventType: 'order_created',
+      referenceId: order.id,
+      summary: `Order ${order.id} created for ${order.serviceDate} in ${order.slotId}.`,
+      createdAt: order.createdAt,
+    });
+
+    if (order.status === 'partial_delivery' || order.status === 'failed_delivery') {
+      events.push({
+        id: `timeline_delivery_${order.id}`,
+        customerId,
+        eventType: 'delivery_exception',
+        referenceId: order.id,
+        summary: `Order ${order.id} ended in ${order.status.replace('_', ' ')}.`,
+        createdAt: order.createdAt,
+      });
+    }
+  }
+
+  for (const note of customerNotes.filter((entry) => entry.customerId === customerId)) {
+    events.push({
+      id: `timeline_note_${note.id}`,
+      customerId,
+      eventType: 'note_added',
+      referenceId: note.id,
+      summary: `${note.noteType} note added: ${note.note}`,
+      createdAt: note.createdAt,
+    });
+  }
+
+  for (const supportCase of supportCases.filter((entry) => entry.customerId === customerId)) {
+    events.push({
+      id: `timeline_case_${supportCase.id}`,
+      customerId,
+      eventType: supportCase.status === 'open' ? 'support_case_opened' : 'support_case_updated',
+      referenceId: supportCase.id,
+      summary: `Support case ${supportCase.subject} is ${supportCase.status}.`,
+      createdAt: supportCase.lastUpdatedAt,
+    });
+  }
+
+  if (customerId) {
+    const customer = customers.find((entry) => entry.id === customerId);
+    if (customer && customer.riskState !== 'healthy') {
+      events.push({
+        id: `timeline_risk_${customer.id}`,
+        customerId,
+        eventType: 'account_flagged',
+        referenceId: customer.id,
+        summary: `Account risk state is ${customer.riskState}.`,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  return events.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
 function buildCustomerServiceability(customer: CustomerAccount, defaultServiceDate: string): CustomerServiceabilitySummary {
   const serviceSlots = slots.filter((slot) => slot.serviceDate === defaultServiceDate);
   const serviceCapacities = capacities.filter((capacity) => capacity.serviceDate === defaultServiceDate);
@@ -1312,6 +1590,8 @@ async function persistState() {
   const snapshot: ApiStateSnapshot = {
     customers,
     customerAuthRecords,
+    customerNotes,
+    supportCases,
     products,
     capacities,
     slots,
@@ -1336,6 +1616,8 @@ async function loadState(): Promise<ApiStateSnapshot> {
     const snapshot: ApiStateSnapshot = {
       customers: parsed.customers ?? customers,
       customerAuthRecords: parsed.customerAuthRecords ?? customerAuthRecords,
+      customerNotes: parsed.customerNotes ?? customerNotes,
+      supportCases: parsed.supportCases ?? supportCases,
       products: parsed.products ?? products,
       capacities: parsed.capacities ?? capacities,
       slots: parsed.slots ?? slots,
@@ -1363,6 +1645,8 @@ async function loadState(): Promise<ApiStateSnapshot> {
     const snapshot: ApiStateSnapshot = {
       customers,
       customerAuthRecords,
+      customerNotes,
+      supportCases,
       products,
       capacities,
       slots,
@@ -1390,6 +1674,8 @@ async function loadState(): Promise<ApiStateSnapshot> {
 function rehydrateState(snapshot: ApiStateSnapshot) {
   customers.splice(0, customers.length, ...snapshot.customers);
   customerAuthRecords.splice(0, customerAuthRecords.length, ...snapshot.customerAuthRecords);
+  customerNotes.splice(0, customerNotes.length, ...snapshot.customerNotes);
+  supportCases.splice(0, supportCases.length, ...snapshot.supportCases);
   products.splice(0, products.length, ...snapshot.products);
   capacities.splice(0, capacities.length, ...snapshot.capacities);
   slots.splice(0, slots.length, ...snapshot.slots);

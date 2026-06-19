@@ -99,6 +99,39 @@
       "deliveryZone": "Central"
     }
   ],
+  "customerNotes": [
+    {
+      "id": "note_cafe_nook_1",
+      "customerId": "cust_cafe_nook",
+      "noteType": "support",
+      "note": "Prefers morning drops before 8:00 AM.",
+      "createdBy": "support",
+      "createdAt": "2026-06-19T08:10:00+05:30"
+    },
+    {
+      "id": "note_hotel_lotus_1",
+      "customerId": "cust_hotel_lotus",
+      "noteType": "accounts",
+      "note": "Watch for part-pay requests during month end.",
+      "createdBy": "accounts",
+      "createdAt": "2026-06-19T08:12:00+05:30"
+    }
+  ],
+  "supportCases": [
+    {
+      "id": "case_cafe_nook_1",
+      "customerId": "cust_cafe_nook",
+      "orderId": "AB-1041",
+      "status": "investigating",
+      "priority": "medium",
+      "subject": "Confirm tomorrow morning drop and loaf count",
+      "openedBy": "support",
+      "assignedTo": "support",
+      "createdAt": "2026-06-19T08:00:00+05:30",
+      "closedAt": null,
+      "lastUpdatedAt": "2026-06-19T08:10:00+05:30"
+    }
+  ],
   "products": [
     {
       "id": "prod_croissant",

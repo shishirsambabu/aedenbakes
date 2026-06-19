@@ -108,6 +108,9 @@ export interface AuditEvent {
     | 'customer_onboarded'
     | 'customer_order_placed'
     | 'customer_order_rejected'
+    | 'customer_note_added'
+    | 'support_case_opened'
+    | 'support_case_updated'
     | 'erp_sync_triggered'
     | 'erp_sync_completed'
     | 'approval_queued'
@@ -186,6 +189,64 @@ export interface CustomerDashboardResponse {
   };
   serviceability: CustomerServiceabilitySummary;
   defaultServiceDate: string;
+}
+
+export interface CustomerNote {
+  id: string;
+  customerId: string;
+  noteType: 'support' | 'accounts' | 'delivery' | 'production' | 'general';
+  note: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface CustomerTimelineEvent {
+  id: string;
+  customerId: string;
+  eventType:
+    | 'order_created'
+    | 'order_returned'
+    | 'support_case_opened'
+    | 'support_case_updated'
+    | 'note_added'
+    | 'account_flagged'
+    | 'delivery_exception';
+  referenceId: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface SupportCase {
+  id: string;
+  customerId: string;
+  orderId?: string;
+  status: 'open' | 'investigating' | 'waiting_customer' | 'waiting_internal' | 'resolved' | 'closed' | 'escalated';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  subject: string;
+  openedBy: string;
+  assignedTo: string | null;
+  createdAt: string;
+  closedAt: string | null;
+  lastUpdatedAt: string;
+}
+
+export interface SupportCaseMessage {
+  id: string;
+  caseId: string;
+  messageType: 'customer' | 'internal' | 'system';
+  message: string;
+  authorRole: Role | 'system';
+  authorId: string;
+  createdAt: string;
+}
+
+export interface Customer360Response {
+  customer: CustomerAccount;
+  auth: CustomerPortalAuthRecord | null;
+  notes: CustomerNote[];
+  timeline: CustomerTimelineEvent[];
+  supportCases: SupportCase[];
+  orders: Order[];
 }
 
 export interface CustomerOnboardingRequest {

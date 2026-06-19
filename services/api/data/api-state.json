@@ -32,7 +32,7 @@
       "name": "Test Cafe",
       "tier": "Tier B",
       "creditLimit": 15000,
-      "outstandingBalance": 0,
+      "outstandingBalance": 348,
       "riskState": "healthy",
       "deliveryZone": "North"
     }
@@ -101,6 +101,14 @@
   ],
   "customerNotes": [
     {
+      "id": "note_979ab943-055a-4f2f-9fa1-11c3acca5187",
+      "customerId": "cust_a74e7252",
+      "noteType": "support",
+      "note": "Phase 3 smoke test note.",
+      "createdBy": "owner",
+      "createdAt": "2026-06-19T03:04:59.467Z"
+    },
+    {
       "id": "note_cafe_nook_1",
       "customerId": "cust_cafe_nook",
       "noteType": "support",
@@ -117,7 +125,30 @@
       "createdAt": "2026-06-19T08:12:00+05:30"
     }
   ],
+  "supportCaseMessages": [
+    {
+      "id": "msg_case_cafe_nook_1",
+      "caseId": "case_cafe_nook_1",
+      "messageType": "internal",
+      "message": "Follow up with the bakery team before the cutoff closes.",
+      "authorRole": "support",
+      "authorId": "support",
+      "createdAt": "2026-06-19T08:11:00+05:30"
+    }
+  ],
   "supportCases": [
+    {
+      "id": "case_d877480c-5aa4-419b-a340-73621b148f9b",
+      "customerId": "cust_a74e7252",
+      "status": "open",
+      "priority": "low",
+      "subject": "Smoke test support case",
+      "openedBy": "owner",
+      "assignedTo": "owner",
+      "createdAt": "2026-06-19T03:04:59.387Z",
+      "closedAt": null,
+      "lastUpdatedAt": "2026-06-19T03:04:59.387Z"
+    },
     {
       "id": "case_cafe_nook_1",
       "customerId": "cust_cafe_nook",
@@ -130,6 +161,153 @@
       "createdAt": "2026-06-19T08:00:00+05:30",
       "closedAt": null,
       "lastUpdatedAt": "2026-06-19T08:10:00+05:30"
+    }
+  ],
+  "standingOrders": [
+    {
+      "id": "so_093a2e4a-cc59-476e-bde5-eec39978c47f",
+      "customerId": "cust_a74e7252",
+      "status": "active",
+      "schedule": {
+        "deliveryDays": [
+          6
+        ],
+        "slotId": "slot_morning",
+        "paymentMode": "credit",
+        "items": [
+          {
+            "productId": "prod_croissant",
+            "quantity": 6
+          }
+        ],
+        "notes": "Friday breakfast repeat for Test Cafe."
+      },
+      "createdAt": "2026-06-19T03:15:53.843Z",
+      "updatedAt": "2026-06-19T03:16:17.654Z"
+    },
+    {
+      "id": "so_cafe_nook_weekday",
+      "customerId": "cust_cafe_nook",
+      "status": "active",
+      "schedule": {
+        "deliveryDays": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "slotId": "slot_morning",
+        "paymentMode": "credit",
+        "items": [
+          {
+            "productId": "prod_loaf",
+            "quantity": 12
+          },
+          {
+            "productId": "prod_croissant",
+            "quantity": 12
+          }
+        ],
+        "notes": "Weekday breakfast repeat for Cafe Nook."
+      },
+      "createdAt": "2026-06-19T08:15:00+05:30",
+      "updatedAt": "2026-06-19T08:15:00+05:30"
+    },
+    {
+      "id": "so_hotel_lotus_weekend",
+      "customerId": "cust_hotel_lotus",
+      "status": "paused",
+      "schedule": {
+        "deliveryDays": [
+          0,
+          6
+        ],
+        "slotId": "slot_evening",
+        "paymentMode": "part-pay",
+        "items": [
+          {
+            "productId": "prod_loaf",
+            "quantity": 8
+          }
+        ],
+        "notes": "Weekend banquet bread pack for Hotel Lotus."
+      },
+      "createdAt": "2026-06-19T08:16:00+05:30",
+      "updatedAt": "2026-06-19T08:20:00+05:30"
+    }
+  ],
+  "standingOrderRuns": [
+    {
+      "id": "sor_9b3b5271-5909-43b4-b96b-d4e03e577235",
+      "standingOrderId": "so_hotel_lotus_weekend",
+      "serviceDate": "2026-06-20",
+      "status": "skipped",
+      "generatedOrderId": null,
+      "reason": "Standing order is paused.",
+      "createdAt": "2026-06-19T03:16:17.660Z"
+    },
+    {
+      "id": "sor_bca87940-29cf-476b-91e0-3ded8efdcb13",
+      "standingOrderId": "so_cafe_nook_weekday",
+      "serviceDate": "2026-06-20",
+      "status": "skipped",
+      "generatedOrderId": null,
+      "reason": "Standing order does not run on this weekday.",
+      "createdAt": "2026-06-19T03:16:17.660Z"
+    },
+    {
+      "id": "sor_aee4be39-ff33-4086-8090-85d5b4aae98d",
+      "standingOrderId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f",
+      "serviceDate": "2026-06-20",
+      "status": "generated",
+      "generatedOrderId": "ord_d80548ba-5bcd-4b4f-bf49-c6231157fb69",
+      "createdAt": "2026-06-19T03:16:17.660Z"
+    },
+    {
+      "id": "sor_3008b54f-4fbe-4042-b93a-9c75c1ed249f",
+      "standingOrderId": "so_hotel_lotus_weekend",
+      "serviceDate": "2026-06-19",
+      "status": "skipped",
+      "generatedOrderId": null,
+      "reason": "Standing order is paused.",
+      "createdAt": "2026-06-19T03:15:53.857Z"
+    },
+    {
+      "id": "sor_1bf5b3be-fe62-4761-828a-51126c7f855a",
+      "standingOrderId": "so_cafe_nook_weekday",
+      "serviceDate": "2026-06-19",
+      "status": "failed",
+      "generatedOrderId": null,
+      "reason": "No delivery slot found for slot_morning on 2026-06-19.",
+      "createdAt": "2026-06-19T03:15:53.857Z"
+    },
+    {
+      "id": "sor_0072b530-7425-4944-b34a-eef75b31e686",
+      "standingOrderId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f",
+      "serviceDate": "2026-06-19",
+      "status": "skipped",
+      "generatedOrderId": null,
+      "reason": "Standing order is paused for this date.",
+      "createdAt": "2026-06-19T03:15:53.857Z"
+    }
+  ],
+  "standingOrderPauses": [
+    {
+      "id": "pause_e3174116-e8d0-4db7-a18a-9be2ae056438",
+      "standingOrderId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f",
+      "startDate": "2026-06-19",
+      "endDate": "2026-06-19",
+      "reason": "Temporary kitchen closure",
+      "createdAt": "2026-06-19T03:15:53.846Z"
+    },
+    {
+      "id": "pause_hotel_lotus_1",
+      "standingOrderId": "so_hotel_lotus_weekend",
+      "startDate": "2026-06-19",
+      "endDate": null,
+      "reason": "Paused for temporary renovation closure.",
+      "createdAt": "2026-06-19T08:20:00+05:30"
     }
   ],
   "products": [
@@ -164,7 +342,7 @@
       "productId": "prod_croissant",
       "serviceDate": "2026-06-20",
       "capacity": 200,
-      "bookedQuantity": 21,
+      "bookedQuantity": 27,
       "status": "open",
       "version": 4
     },
@@ -185,7 +363,7 @@
       "zone": "North",
       "label": "6:00 - 8:00 AM",
       "maxOrders": 18,
-      "bookedOrders": 3,
+      "bookedOrders": 4,
       "status": "open"
     },
     {
@@ -199,6 +377,24 @@
     }
   ],
   "orders": [
+    {
+      "id": "ord_d80548ba-5bcd-4b4f-bf49-c6231157fb69",
+      "customerId": "cust_a74e7252",
+      "serviceDate": "2026-06-20",
+      "slotId": "slot_morning",
+      "paymentMode": "credit",
+      "status": "confirmed",
+      "source": "standing_order",
+      "amountTotal": 348,
+      "createdAt": "2026-06-19T03:16:17.660Z",
+      "items": [
+        {
+          "productId": "prod_croissant",
+          "quantity": 6,
+          "unitPrice": 58
+        }
+      ]
+    },
     {
       "id": "ord_2175e541-f952-4453-97c0-bd18b75b3804",
       "customerId": "cust_cafe_nook",
@@ -268,9 +464,9 @@
         {
           "productId": "prod_croissant",
           "slotId": "slot_morning",
-          "quantity": 21,
-          "plannedQuantity": 21,
-          "actualQuantity": 21,
+          "quantity": 27,
+          "plannedQuantity": 27,
+          "actualQuantity": 27,
           "shortQuantity": 0,
           "note": "Fully covered by capacity"
         },
@@ -288,6 +484,62 @@
     }
   ],
   "auditEvents": [
+    {
+      "id": "audit_19",
+      "createdAt": "2026-06-19T03:16:17.660Z",
+      "kind": "standing_order_run_generated",
+      "actor": "owner",
+      "summary": "Generated standing order run so_093a2e4a-cc59-476e-bde5-eec39978c47f into order ord_d80548ba-5bcd-4b4f-bf49-c6231157fb69 for 2026-06-20.",
+      "referenceId": "ord_d80548ba-5bcd-4b4f-bf49-c6231157fb69"
+    },
+    {
+      "id": "audit_18",
+      "createdAt": "2026-06-19T03:16:17.654Z",
+      "kind": "standing_order_updated",
+      "actor": "owner",
+      "summary": "Updated standing order so_093a2e4a-cc59-476e-bde5-eec39978c47f.",
+      "referenceId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f"
+    },
+    {
+      "id": "audit_17",
+      "createdAt": "2026-06-19T03:15:53.854Z",
+      "kind": "standing_order_resumed",
+      "actor": "owner",
+      "summary": "Resumed standing order so_093a2e4a-cc59-476e-bde5-eec39978c47f.",
+      "referenceId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f"
+    },
+    {
+      "id": "audit_16",
+      "createdAt": "2026-06-19T03:15:53.846Z",
+      "kind": "standing_order_paused",
+      "actor": "owner",
+      "summary": "Paused standing order so_093a2e4a-cc59-476e-bde5-eec39978c47f. Temporary kitchen closure",
+      "referenceId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f"
+    },
+    {
+      "id": "audit_15",
+      "createdAt": "2026-06-19T03:15:53.843Z",
+      "kind": "standing_order_created",
+      "actor": "owner",
+      "summary": "Created standing order so_093a2e4a-cc59-476e-bde5-eec39978c47f for Test Cafe.",
+      "referenceId": "so_093a2e4a-cc59-476e-bde5-eec39978c47f"
+    },
+    {
+      "id": "audit_14",
+      "createdAt": "2026-06-19T03:04:59.467Z",
+      "kind": "customer_note_added",
+      "actor": "owner",
+      "summary": "Added customer note for cust_a74e7252. Phase 3 smoke test note.",
+      "referenceId": "note_979ab943-055a-4f2f-9fa1-11c3acca5187"
+    },
+    {
+      "id": "audit_13",
+      "createdAt": "2026-06-19T03:04:59.387Z",
+      "kind": "support_case_opened",
+      "actor": "owner",
+      "summary": "Opened support case case_d877480c-5aa4-419b-a340-73621b148f9b for cust_a74e7252. Smoke test support case",
+      "referenceId": "case_d877480c-5aa4-419b-a340-73621b148f9b"
+    },
     {
       "id": "audit_12",
       "createdAt": "2026-06-19T02:49:19.066Z",
@@ -395,89 +647,7 @@
   },
   "sessions": [
     {
-      "token": "1461cbc6-969a-4111-abb6-20edcda753f1",
-      "user": {
-        "id": "user_owner",
-        "username": "owner",
-        "displayName": "Owner",
-        "role": "owner",
-        "password": "owner123"
-      },
-      "createdAt": "2026-06-18T19:57:17.049Z",
-      "expiresAt": "2026-06-19T03:57:17.049Z"
-    },
-    {
-      "token": "fb8e8388-51b3-44c2-882d-1e56ec491d7f",
-      "user": {
-        "id": "user_owner",
-        "username": "owner",
-        "displayName": "Owner",
-        "role": "owner",
-        "password": "owner123"
-      },
-      "createdAt": "2026-06-18T20:03:01.338Z",
-      "expiresAt": "2026-06-19T04:03:01.338Z"
-    },
-    {
-      "token": "079823ba-c89f-4627-9006-578686c245ce",
-      "user": {
-        "id": "user_owner",
-        "username": "owner",
-        "displayName": "Owner",
-        "role": "owner",
-        "password": "owner123"
-      },
-      "createdAt": "2026-06-18T20:06:52.849Z",
-      "expiresAt": "2026-06-19T04:06:52.849Z"
-    },
-    {
-      "token": "97792fa6-6efa-4bde-9c01-692c8b25491e",
-      "user": {
-        "id": "cust_auth_1a5d6755-9610-4a02-bae4-6a2f0f237c8c",
-        "username": "9012345678",
-        "displayName": "Test Cafe",
-        "role": "customer",
-        "customerId": "cust_a74e7252"
-      },
-      "createdAt": "2026-06-18T22:29:20.784Z",
-      "expiresAt": "2026-06-19T06:29:20.784Z"
-    },
-    {
-      "token": "98388430-45ed-4747-91d0-87f2b566186a",
-      "user": {
-        "id": "user_production",
-        "username": "production",
-        "displayName": "Production Lead",
-        "role": "production"
-      },
-      "createdAt": "2026-06-18T22:34:17.130Z",
-      "expiresAt": "2026-06-19T06:34:17.130Z"
-    },
-    {
-      "token": "ea771b80-e762-4ff2-a905-76504655af40",
-      "user": {
-        "id": "user_owner",
-        "username": "owner",
-        "displayName": "Owner",
-        "role": "owner"
-      },
-      "createdAt": "2026-06-18T22:34:17.131Z",
-      "expiresAt": "2026-06-19T06:34:17.131Z"
-    },
-    {
-      "token": "77e01797-8676-49bb-bdd3-80f8f4965dad",
-      "user": {
-        "id": "cust_auth_e7d09551-e0e3-4b6b-9102-30d3ecf78cfb",
-        "username": "9444000001",
-        "displayName": "North Star Cafe",
-        "role": "customer",
-        "customerId": "cust_bce81362"
-      },
-      "createdAt": "2026-06-18T22:40:41.313Z",
-      "expiresAt": "2026-06-19T06:40:41.313Z"
-    },
-    {
-      "token": "2ba4a2e2-4fbe-42f3-bcbe-3087acae8915",
+      "token": "55e3cd22-5d32-4c2a-934c-139ac7268bb3",
       "user": {
         "id": "cust_auth_cafe_nook",
         "username": "9000000001",
@@ -485,151 +655,184 @@
         "role": "customer",
         "customerId": "cust_cafe_nook"
       },
-      "createdAt": "2026-06-18T22:40:41.352Z",
-      "expiresAt": "2026-06-19T06:40:41.352Z"
+      "createdAt": "2026-06-19T04:56:59.010Z",
+      "expiresAt": "2026-06-19T12:56:59.010Z"
     },
     {
-      "token": "5cd29e7d-8bbe-401d-9998-9e0645102891",
+      "token": "901a74e0-7e0f-4974-867e-7b70116eb173",
       "user": {
         "id": "user_owner",
         "username": "owner",
         "displayName": "Owner",
         "role": "owner"
       },
-      "createdAt": "2026-06-18T22:40:54.262Z",
-      "expiresAt": "2026-06-19T06:40:54.262Z"
+      "createdAt": "2026-06-19T05:01:33.662Z",
+      "expiresAt": "2026-06-19T13:01:33.662Z"
     },
     {
-      "token": "89d62db2-d270-4d74-95f6-85c534296273",
-      "user": {
-        "id": "user_production",
-        "username": "production",
-        "displayName": "Production Lead",
-        "role": "production"
-      },
-      "createdAt": "2026-06-18T22:40:54.358Z",
-      "expiresAt": "2026-06-19T06:40:54.358Z"
-    },
-    {
-      "token": "bb2ae3de-a079-456e-a546-34cab018b909",
-      "user": {
-        "id": "user_production",
-        "username": "production",
-        "displayName": "Production Lead",
-        "role": "production"
-      },
-      "createdAt": "2026-06-19T02:17:52.402Z",
-      "expiresAt": "2026-06-19T10:17:52.402Z"
-    },
-    {
-      "token": "476165c0-00f1-4d6b-83ab-541fc373f6a8",
-      "user": {
-        "id": "user_production",
-        "username": "production",
-        "displayName": "Production Lead",
-        "role": "production"
-      },
-      "createdAt": "2026-06-19T02:18:47.523Z",
-      "expiresAt": "2026-06-19T10:18:47.523Z"
-    },
-    {
-      "token": "ab80bc4f-c37a-47df-82f6-059ee597ff7a",
-      "user": {
-        "id": "user_production",
-        "username": "production",
-        "displayName": "Production Lead",
-        "role": "production"
-      },
-      "createdAt": "2026-06-19T02:18:47.553Z",
-      "expiresAt": "2026-06-19T10:18:47.553Z"
-    },
-    {
-      "token": "6ae97617-e908-453a-a2ed-75191005c2e2",
+      "token": "75fd04a1-7cbf-4041-91e2-402cc81b9c85",
       "user": {
         "id": "user_owner",
         "username": "owner",
         "displayName": "Owner",
         "role": "owner"
       },
-      "createdAt": "2026-06-19T02:19:01.519Z",
-      "expiresAt": "2026-06-19T10:19:01.519Z"
+      "createdAt": "2026-06-19T05:34:59.556Z",
+      "expiresAt": "2026-06-19T13:34:59.556Z"
     },
     {
-      "token": "48e041a3-f5ca-4e19-92b9-ed2c5d814d79",
+      "token": "54fd6660-0e8b-4ffa-b063-ffd7541eba10",
       "user": {
         "id": "user_production",
         "username": "production",
         "displayName": "Production Lead",
         "role": "production"
       },
-      "createdAt": "2026-06-19T02:19:01.544Z",
-      "expiresAt": "2026-06-19T10:19:01.544Z"
+      "createdAt": "2026-06-19T05:37:25.072Z",
+      "expiresAt": "2026-06-19T13:37:25.072Z"
     },
     {
-      "token": "e2f2f5d7-9d39-4cde-819d-f8eaf5f93208",
+      "token": "07e45317-50df-482d-9d84-72ad7fd5e6d6",
       "user": {
         "id": "user_delivery",
         "username": "delivery",
         "displayName": "Delivery Lead",
         "role": "delivery"
       },
-      "createdAt": "2026-06-19T02:49:06.358Z",
-      "expiresAt": "2026-06-19T10:49:06.358Z"
+      "createdAt": "2026-06-19T05:38:03.472Z",
+      "expiresAt": "2026-06-19T13:38:03.472Z"
     },
     {
-      "token": "bbcd5af4-fab3-42ad-94be-61dac6360702",
+      "token": "66da8bed-7f90-45a5-8bb3-1d5e587e1510",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T05:49:08.701Z",
+      "expiresAt": "2026-06-19T13:49:08.701Z"
+    },
+    {
+      "token": "6ca16ef1-693f-4b40-b58d-216018fa4e42",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T05:51:05.724Z",
+      "expiresAt": "2026-06-19T13:51:05.724Z"
+    },
+    {
+      "token": "70d25ae9-dc6c-420e-b01c-73848923e986",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:01:14.160Z",
+      "expiresAt": "2026-06-19T19:01:14.160Z"
+    },
+    {
+      "token": "d2ff3cdf-4be2-43b3-a498-82f225554eae",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:07:23.985Z",
+      "expiresAt": "2026-06-19T19:07:23.985Z"
+    },
+    {
+      "token": "06cb64d5-158e-4522-8eb2-79abaa67ebcf",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:10:29.173Z",
+      "expiresAt": "2026-06-19T19:10:29.173Z"
+    },
+    {
+      "token": "d9ad7574-e045-4501-9f65-9efd4d789683",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:15:20.110Z",
+      "expiresAt": "2026-06-19T19:15:20.110Z"
+    },
+    {
+      "token": "46d89cff-1f03-44ab-8947-eace2a1532ec",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:16:36.215Z",
+      "expiresAt": "2026-06-19T19:16:36.215Z"
+    },
+    {
+      "token": "faa73fb6-9b01-452b-a689-bbee01af25dc",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:16:38.812Z",
+      "expiresAt": "2026-06-19T19:16:38.812Z"
+    },
+    {
+      "token": "f3215246-1239-4cb5-b80e-97448688a143",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:16:42.140Z",
+      "expiresAt": "2026-06-19T19:16:42.140Z"
+    },
+    {
+      "token": "b5763086-4767-40da-9b54-f94801d9a8bd",
+      "user": {
+        "id": "user_production",
+        "username": "production",
+        "displayName": "Production Lead",
+        "role": "production"
+      },
+      "createdAt": "2026-06-19T11:16:46.999Z",
+      "expiresAt": "2026-06-19T19:16:46.999Z"
+    },
+    {
+      "token": "0c08e01d-70ff-4b49-abbd-3f9e632fa555",
       "user": {
         "id": "user_owner",
         "username": "owner",
         "displayName": "Owner",
         "role": "owner"
       },
-      "createdAt": "2026-06-19T02:49:06.574Z",
-      "expiresAt": "2026-06-19T10:49:06.574Z"
+      "createdAt": "2026-06-19T12:22:37.393Z",
+      "expiresAt": "2026-06-19T20:22:37.393Z"
     },
     {
-      "token": "b95d25ba-8e7a-440c-a828-3205d7d130c4",
-      "user": {
-        "id": "user_delivery",
-        "username": "delivery",
-        "displayName": "Delivery Lead",
-        "role": "delivery"
-      },
-      "createdAt": "2026-06-19T02:49:19.053Z",
-      "expiresAt": "2026-06-19T10:49:19.053Z"
-    },
-    {
-      "token": "1107a7e4-62be-47f4-b1e0-e44035b39462",
+      "token": "02e822ad-461f-426e-a6c5-bfa21b608a2f",
       "user": {
         "id": "user_owner",
         "username": "owner",
         "displayName": "Owner",
         "role": "owner"
       },
-      "createdAt": "2026-06-19T02:49:19.061Z",
-      "expiresAt": "2026-06-19T10:49:19.061Z"
-    },
-    {
-      "token": "7861f67c-6558-42b8-918d-94e5ae47d9cc",
-      "user": {
-        "id": "user_owner",
-        "username": "owner",
-        "displayName": "Owner",
-        "role": "owner"
-      },
-      "createdAt": "2026-06-19T02:49:26.670Z",
-      "expiresAt": "2026-06-19T10:49:26.670Z"
-    },
-    {
-      "token": "da6e366e-f6fd-4ea5-b867-e12afdd03c79",
-      "user": {
-        "id": "user_owner",
-        "username": "owner",
-        "displayName": "Owner",
-        "role": "owner"
-      },
-      "createdAt": "2026-06-19T02:49:26.768Z",
-      "expiresAt": "2026-06-19T10:49:26.768Z"
+      "createdAt": "2026-06-19T12:22:37.396Z",
+      "expiresAt": "2026-06-19T20:22:37.396Z"
     }
   ],
   "approvals": [
@@ -669,5 +872,270 @@
   ],
   "deliveryEventIds": [
     "evt_test_002"
-  ]
+  ],
+  "notificationJobs": [
+    {
+      "id": "ntf_ae92f66a-97e9-46ae-885b-a2eb73c5283f",
+      "channel": "in_app",
+      "templateCode": "daily_digest",
+      "status": "delivered",
+      "correlationKey": "digest:2026-06-19",
+      "recipient": "cust_bce81362",
+      "subject": "Daily operations digest ready",
+      "createdAt": "2026-06-19T12:14:52.935Z",
+      "sentAt": "2026-06-19T12:14:52.935Z"
+    },
+    {
+      "id": "ntf_ae92f66a-97e9-46ae-885b-a2eb73c5283f",
+      "channel": "in_app",
+      "templateCode": "daily_digest",
+      "status": "delivered",
+      "correlationKey": "digest:2026-06-19",
+      "recipient": "cust_bce81362",
+      "subject": "Daily operations digest ready",
+      "createdAt": "2026-06-19T12:14:52.935Z",
+      "sentAt": "2026-06-19T12:14:52.935Z"
+    }
+  ],
+  "notificationDeliveries": [
+    {
+      "id": "ntfd_425bac60-415c-4fa7-b671-643fa4065733",
+      "jobId": "ntf_ae92f66a-97e9-46ae-885b-a2eb73c5283f",
+      "recipient": "cust_bce81362",
+      "providerMessageId": "msg_7222a154",
+      "status": "delivered",
+      "attemptNo": 1,
+      "createdAt": "2026-06-19T12:14:52.935Z"
+    },
+    {
+      "id": "ntfd_425bac60-415c-4fa7-b671-643fa4065733",
+      "jobId": "ntf_ae92f66a-97e9-46ae-885b-a2eb73c5283f",
+      "recipient": "cust_bce81362",
+      "providerMessageId": "msg_7222a154",
+      "status": "delivered",
+      "attemptNo": 1,
+      "createdAt": "2026-06-19T12:14:52.935Z"
+    }
+  ],
+  "accountHealthSnapshots": [
+    {
+      "id": "health_cust_cafe_nook",
+      "customerId": "cust_cafe_nook",
+      "healthState": "watch",
+      "riskScore": 76,
+      "exposure": 18400,
+      "reasonJson": [
+        "risk=watch",
+        "exposure=18400",
+        "open_cases=1",
+        "failed_deliveries=0",
+        "partial_deliveries=1"
+      ],
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "health_cust_hotel_lotus",
+      "customerId": "cust_hotel_lotus",
+      "healthState": "healthy",
+      "riskScore": 40,
+      "exposure": 9310,
+      "reasonJson": [
+        "risk=healthy",
+        "exposure=9310",
+        "open_cases=0",
+        "failed_deliveries=0",
+        "partial_deliveries=0"
+      ],
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "health_cust_a74e7252",
+      "customerId": "cust_a74e7252",
+      "healthState": "healthy",
+      "riskScore": 13,
+      "exposure": 348,
+      "reasonJson": [
+        "risk=healthy",
+        "exposure=348",
+        "open_cases=1",
+        "failed_deliveries=0",
+        "partial_deliveries=0"
+      ],
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "health_cust_bce81362",
+      "customerId": "cust_bce81362",
+      "healthState": "healthy",
+      "riskScore": 0,
+      "exposure": 0,
+      "reasonJson": [
+        "risk=healthy",
+        "exposure=0",
+        "open_cases=0",
+        "failed_deliveries=0",
+        "partial_deliveries=0"
+      ],
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    }
+  ],
+  "accountActions": [],
+  "alertRules": [
+    {
+      "id": "rule_watch_balance",
+      "ruleCode": "balance_watch",
+      "thresholdJson": {
+        "riskState": [
+          "watch",
+          "block_soon",
+          "blocked"
+        ]
+      },
+      "active": true,
+      "createdAt": "2026-06-19T08:05:00+05:30"
+    },
+    {
+      "id": "rule_failed_delivery",
+      "ruleCode": "failed_delivery",
+      "thresholdJson": {
+        "status": [
+          "failed_delivery",
+          "partial_delivery"
+        ]
+      },
+      "active": true,
+      "createdAt": "2026-06-19T08:05:00+05:30"
+    }
+  ],
+  "alertEvents": [
+    {
+      "id": "alert_rule_watch_balance_2026-06-19",
+      "ruleId": "rule_watch_balance",
+      "severity": "warn",
+      "payloadJson": {
+        "customerIds": [
+          "cust_cafe_nook"
+        ],
+        "count": 1
+      },
+      "createdAt": "2026-06-19T12:21:54.059Z",
+      "acknowledgedAt": null
+    },
+    {
+      "id": "alert_rule_failed_delivery_2026-06-19_deliveries",
+      "ruleId": "rule_failed_delivery",
+      "severity": "warn",
+      "payloadJson": {
+        "orderIds": [
+          "AB-1041"
+        ],
+        "count": 1
+      },
+      "createdAt": "2026-06-19T12:21:54.059Z",
+      "acknowledgedAt": null
+    }
+  ],
+  "analyticsSnapshots": [
+    {
+      "id": "analytics_2026-06-19_2",
+      "snapshotTime": "2026-06-19T12:21:54.059Z",
+      "payloadJson": {
+        "snapshotTime": "2026-06-19T12:21:54.059Z",
+        "totals": {
+          "customers": 4,
+          "orders": 4,
+          "revenue": 3222,
+          "supportOpen": 2,
+          "activeStandingOrders": 2,
+          "watchCustomers": 1,
+          "repeatCustomers": 2,
+          "deliverySuccessRate": 0
+        },
+        "capacity": {
+          "booked": 45,
+          "total": 460,
+          "fillRate": 10
+        }
+      },
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    }
+  ],
+  "kpiRollups": [
+    {
+      "id": "kpi_orders_2026-06-19",
+      "metricCode": "order_count",
+      "serviceDate": "2026-06-19",
+      "value": 4,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_revenue_2026-06-19",
+      "metricCode": "revenue_total",
+      "serviceDate": "2026-06-19",
+      "value": 3222,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_delivery_success_2026-06-19",
+      "metricCode": "delivery_success_rate",
+      "serviceDate": "2026-06-19",
+      "value": 0,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_support_open_2026-06-19",
+      "metricCode": "open_support_cases",
+      "serviceDate": "2026-06-19",
+      "value": 2,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_standing_active_2026-06-19",
+      "metricCode": "active_standing_orders",
+      "serviceDate": "2026-06-19",
+      "value": 2,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_watch_2026-06-19",
+      "metricCode": "watch_customers",
+      "serviceDate": "2026-06-19",
+      "value": 1,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_routes_2026-06-19",
+      "metricCode": "open_routes",
+      "serviceDate": "2026-06-19",
+      "value": 2,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    },
+    {
+      "id": "kpi_repeat_2026-06-19",
+      "metricCode": "repeat_customers",
+      "serviceDate": "2026-06-19",
+      "value": 2,
+      "createdAt": "2026-06-19T12:21:54.059Z"
+    }
+  ],
+  "customerRequests": [],
+  "savedAddresses": [
+    {
+      "id": "addr_cafe_nook_main",
+      "customerId": "cust_cafe_nook",
+      "label": "Main kitchen",
+      "addressLine": "Cafe Nook, North Industrial Estate",
+      "deliveryZone": "North",
+      "active": true
+    },
+    {
+      "id": "addr_hotel_lotus_main",
+      "customerId": "cust_hotel_lotus",
+      "label": "Receiving dock",
+      "addressLine": "Hotel Lotus, Central Market Road",
+      "deliveryZone": "Central",
+      "active": true
+    }
+  ],
+  "reportExports": []
 }

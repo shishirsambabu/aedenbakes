@@ -1,11 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import crypto from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   capacities,
   customers,
+  customerBranches as seedCustomerBranches,
+  customerUsers as seedCustomerUsers,
   orders,
   productionBatches,
   products,
@@ -14,6 +17,7 @@ import {
 import type {
   AuditEvent,
   CustomerAccount,
+  CustomerBranch,
   Customer360Response,
   CustomerDashboardResponse,
   CustomerNote,
@@ -21,6 +25,7 @@ import type {
   CustomerOnboardingRequest,
   CustomerOrderCreateRequest,
   CustomerPortalAuthRecord,
+  CustomerUserMembership,
   CustomerServiceabilityCapacity,
   CustomerServiceabilitySlot,
   CustomerServiceabilitySummary,
@@ -47,6 +52,16 @@ app.use(
   }),
 );
 app.use(express.json());
+const allowDemoAccounts = process.env.NODE_ENV !== 'production' || process.env.ENABLE_DEMO_ACCOUNTS === 'true';
+const exposeOtpDebugCode = process.env.NODE_ENV !== 'production' || process.env.EXPOSE_OTP_DEBUG_CODE === 'true';
+
+app.get('/', (_req, res) => {
+  res.json({
+    name: 'Aeden Bakes API',
+    status: 'ok',
+    endpoints: ['/health', '/catalog', '/customers', '/orders', '/production/batches', '/delivery/manifest'],
+  });
+});
 
 type AuthRole = 'owner' | 'manager' | 'production' | 'delivery' | 'accounts' | 'support' | 'customer';
 
@@ -73,6 +88,21 @@ type Session = {
   token: string;
   user: SessionUser;
   createdAt: string;
+  expiresAt: string;
+};
+
+type OtpChallenge = {
+  id: string;
+  phone: string;
+  code: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+type OtpVerification = {
+  token: string;
+  phone: string;
+  verifiedAt: string;
   expiresAt: string;
 };
 
@@ -108,10 +138,125 @@ type DeliveryWritebackEvent = {
   capturedAt: string;
 };
 
+type SupportCaseMessageRecord = {
+  id: string;
+  caseId: string;
+  messageType: 'customer' | 'internal' | 'system';
+  message: string;
+  authorRole: AuthRole | 'system';
+  authorId: string;
+  createdAt: string;
+};
+
+type NotificationJob = {
+  id: string;
+  channel: 'sms' | 'whatsapp' | 'email' | 'in_app';
+  templateCode: string;
+  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'retrying';
+  correlationKey: string;
+  recipient: string;
+  subject: string;
+  createdAt: string;
+  sentAt: string | null;
+};
+
+type NotificationDelivery = {
+  id: string;
+  jobId: string;
+  recipient: string;
+  providerMessageId: string | null;
+  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'retrying';
+  attemptNo: number;
+  createdAt: string;
+};
+
+type AccountHealthSnapshot = {
+  id: string;
+  customerId: string;
+  healthState: 'healthy' | 'watch' | 'block_soon' | 'blocked';
+  riskScore: number;
+  exposure: number;
+  reasonJson: string[];
+  createdAt: string;
+};
+
+type AccountAction = {
+  id: string;
+  customerId: string;
+  actionType: string;
+  reason: string;
+  createdBy: string;
+  approvedBy: string | null;
+  createdAt: string;
+};
+
+type AlertRule = {
+  id: string;
+  ruleCode: string;
+  thresholdJson: Record<string, unknown>;
+  active: boolean;
+  createdAt: string;
+};
+
+type AlertEvent = {
+  id: string;
+  ruleId: string;
+  severity: 'info' | 'warn' | 'critical';
+  payloadJson: Record<string, unknown>;
+  createdAt: string;
+  acknowledgedAt: string | null;
+};
+
+type AnalyticsSnapshot = {
+  id: string;
+  snapshotTime: string;
+  payloadJson: Record<string, unknown>;
+  createdAt: string;
+};
+
+type KpiRollup = {
+  id: string;
+  metricCode: string;
+  serviceDate: string;
+  value: number;
+  createdAt: string;
+};
+
+type CustomerRequest = {
+  id: string;
+  customerId: string;
+  requestType: 'address_change' | 'reorder' | 'support_follow_up' | 'delivery_note';
+  status: 'draft' | 'submitted' | 'in_review' | 'completed' | 'rejected';
+  reason: string;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
+type SavedAddress = {
+  id: string;
+  customerId: string;
+  branchId?: string | null;
+  label: string;
+  addressLine: string;
+  deliveryZone: string;
+  active: boolean;
+};
+
+type ReportExport = {
+  id: string;
+  reportCode: string;
+  createdBy: string;
+  createdAt: string;
+  payloadJson: Record<string, unknown>;
+};
+
 type ApiStateSnapshot = {
   customers: typeof customers;
+  customerBranches: CustomerBranch[];
+  customerUsers: CustomerUserMembership[];
   customerAuthRecords: AuthRecord[];
   customerNotes: CustomerNote[];
+  supportCaseMessages: SupportCaseMessageRecord[];
   supportCases: SupportCase[];
   standingOrders: StandingOrder[];
   standingOrderRuns: StandingOrderRun[];
@@ -126,16 +271,35 @@ type ApiStateSnapshot = {
   sessions: Session[];
   approvals: ApprovalRequest[];
   deliveryEventIds: string[];
+  notificationJobs: NotificationJob[];
+  notificationDeliveries: NotificationDelivery[];
+  accountHealthSnapshots: AccountHealthSnapshot[];
+  accountActions: AccountAction[];
+  alertRules: AlertRule[];
+  alertEvents: AlertEvent[];
+  analyticsSnapshots: AnalyticsSnapshot[];
+  kpiRollups: KpiRollup[];
+  customerRequests: CustomerRequest[];
+  savedAddresses: SavedAddress[];
+  reportExports: ReportExport[];
 };
 
-const authUsers: AuthRecord[] = [
-  { id: 'user_owner', username: 'owner', displayName: 'Owner', role: 'owner', password: 'owner123' },
-  { id: 'user_manager', username: 'manager', displayName: 'Manager', role: 'manager', password: 'manager123' },
-  { id: 'user_production', username: 'production', displayName: 'Production Lead', role: 'production', password: 'production123' },
-  { id: 'user_delivery', username: 'delivery', displayName: 'Delivery Lead', role: 'delivery', password: 'delivery123' },
-  { id: 'user_accounts', username: 'accounts', displayName: 'Accounts Lead', role: 'accounts', password: 'accounts123' },
-  { id: 'user_support', username: 'support', displayName: 'Support Lead', role: 'support', password: 'support123' },
-];
+const authUsers: AuthRecord[] = allowDemoAccounts
+  ? [
+      { id: 'user_owner', username: 'owner', displayName: 'Owner', role: 'owner', password: 'owner123' },
+      { id: 'user_manager', username: 'manager', displayName: 'Manager', role: 'manager', password: 'manager123' },
+      {
+        id: 'user_production',
+        username: 'production',
+        displayName: 'Production Lead',
+        role: 'production',
+        password: 'production123',
+      },
+      { id: 'user_delivery', username: 'delivery', displayName: 'Delivery Lead', role: 'delivery', password: 'delivery123' },
+      { id: 'user_accounts', username: 'accounts', displayName: 'Accounts Lead', role: 'accounts', password: 'accounts123' },
+      { id: 'user_support', username: 'support', displayName: 'Support Lead', role: 'support', password: 'support123' },
+    ]
+  : [];
 
 let customerAuthRecords: AuthRecord[] = [
   {
@@ -171,9 +335,53 @@ let customerAuthRecords: AuthRecord[] = [
 ];
 
 const stateFilePath = join(process.cwd(), 'data', 'api-state.json');
+const databasePath = resolveDatabasePath(process.env.DATABASE_URL ?? '');
+const database = new DatabaseSync(databasePath);
+database.exec(`
+  CREATE TABLE IF NOT EXISTS app_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    snapshot TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS migration_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    migration_name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    token TEXT PRIMARY KEY,
+    user_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+`);
+recordMigration('database-initialized');
 const sessions = new Map<string, Session>();
+const otpChallenges = new Map<string, OtpChallenge>();
+const otpVerifications = new Map<string, OtpVerification>();
 let auditEvents: AuditEvent[] = [];
 let approvals: ApprovalRequest[] = [];
+let branchApprovalRules = [
+  {
+    id: 'rule_customer_branch_create',
+    ruleCode: 'customer_branch_create',
+    targetType: 'branch',
+    thresholdJson: { requiresApproval: true },
+    active: true,
+    createdAt: '2026-06-19T08:07:00+05:30',
+  },
+  {
+    id: 'rule_customer_branch_edit',
+    ruleCode: 'customer_branch_edit',
+    targetType: 'branch',
+    thresholdJson: { requiresApproval: false },
+    active: true,
+    createdAt: '2026-06-19T08:07:00+05:30',
+  },
+];
 let customerNotes: CustomerNote[] = [
   {
     id: 'note_cafe_nook_1',
@@ -190,6 +398,19 @@ let customerNotes: CustomerNote[] = [
     note: 'Watch for part-pay requests during month end.',
     createdBy: 'accounts',
     createdAt: '2026-06-19T08:12:00+05:30',
+  },
+];
+let customerBranches = [...seedCustomerBranches];
+let customerUsers = [...seedCustomerUsers];
+let supportCaseMessages: SupportCaseMessageRecord[] = [
+  {
+    id: 'msg_case_cafe_nook_1',
+    caseId: 'case_cafe_nook_1',
+    messageType: 'internal',
+    message: 'Follow up with the bakery team before the cutoff closes.',
+    authorRole: 'support',
+    authorId: 'support',
+    createdAt: '2026-06-19T08:11:00+05:30',
   },
 ];
 let supportCases: SupportCase[] = [
@@ -211,6 +432,7 @@ let standingOrders: StandingOrder[] = [
   {
     id: 'so_cafe_nook_weekday',
     customerId: 'cust_cafe_nook',
+    branchId: 'branch_cafe_nook_main',
     status: 'active',
     schedule: {
       deliveryDays: [1, 2, 3, 4, 5],
@@ -228,6 +450,7 @@ let standingOrders: StandingOrder[] = [
   {
     id: 'so_hotel_lotus_weekend',
     customerId: 'cust_hotel_lotus',
+    branchId: 'branch_hotel_lotus_main',
     status: 'paused',
     schedule: {
       deliveryDays: [0, 6],
@@ -251,6 +474,49 @@ let standingOrderPauses: StandingOrderPause[] = [
     createdAt: '2026-06-19T08:20:00+05:30',
   },
 ];
+let notificationJobs: NotificationJob[] = [];
+let notificationDeliveries: NotificationDelivery[] = [];
+let accountHealthSnapshots: AccountHealthSnapshot[] = [];
+let accountActions: AccountAction[] = [];
+let alertRules: AlertRule[] = [
+  {
+    id: 'rule_watch_balance',
+    ruleCode: 'balance_watch',
+    thresholdJson: { riskState: ['watch', 'block_soon', 'blocked'] },
+    active: true,
+    createdAt: '2026-06-19T08:05:00+05:30',
+  },
+  {
+    id: 'rule_failed_delivery',
+    ruleCode: 'failed_delivery',
+    thresholdJson: { status: ['failed_delivery', 'partial_delivery'] },
+    active: true,
+    createdAt: '2026-06-19T08:05:00+05:30',
+  },
+];
+let alertEvents: AlertEvent[] = [];
+let analyticsSnapshots: AnalyticsSnapshot[] = [];
+let kpiRollups: KpiRollup[] = [];
+let customerRequests: CustomerRequest[] = [];
+let savedAddresses: SavedAddress[] = [
+  {
+    id: 'addr_cafe_nook_main',
+    customerId: 'cust_cafe_nook',
+    label: 'Main kitchen',
+    addressLine: 'Cafe Nook, North Industrial Estate',
+    deliveryZone: 'North',
+    active: true,
+  },
+  {
+    id: 'addr_hotel_lotus_main',
+    customerId: 'cust_hotel_lotus',
+    label: 'Receiving dock',
+    addressLine: 'Hotel Lotus, Central Market Road',
+    deliveryZone: 'Central',
+    active: true,
+  },
+];
+let reportExports: ReportExport[] = [];
 const processedDeliveryEventIds = new Set<string>();
 let erpSyncStatus: ErpSyncStatus = {
   provider: 'vasy',
@@ -313,6 +579,18 @@ function issueSession(user: SessionUser) {
     expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString(),
   };
   sessions.set(token, session);
+  database
+    .prepare(
+      `
+      INSERT INTO auth_sessions (token, user_json, created_at, expires_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(token) DO UPDATE SET
+        user_json = excluded.user_json,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+      `,
+    )
+    .run(token, JSON.stringify(session.user), session.createdAt, session.expiresAt);
   return session;
 }
 
@@ -320,7 +598,8 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'aeden-bakes-api',
-    persistence: 'json',
+    persistence: 'sqlite',
+    databasePath,
     sessions: sessions.size,
   });
 });
@@ -358,6 +637,7 @@ app.post('/auth/logout', authenticate, (req, res) => {
   const token = getToken(req);
   if (token) {
     sessions.delete(token);
+    database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
     persistStateSoon();
   }
 
@@ -379,23 +659,118 @@ app.get('/auth/me', authenticate, (req, res) => {
   });
 });
 
+app.post('/auth/otp/request', (req, res) => {
+  const { phone } = req.body as { phone?: string };
+  const normalizedPhone = phone?.replace(/\D/g, '').trim();
+
+  if (!normalizedPhone || normalizedPhone.length < 10) {
+    res.status(400).json({ error: 'phone is required' });
+    return;
+  }
+
+  const challengeId = crypto.randomUUID();
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const now = new Date();
+
+  otpChallenges.set(challengeId, {
+    id: challengeId,
+    phone: normalizedPhone,
+    code,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 1000 * 60 * 5).toISOString(),
+  });
+
+  res.json({
+    challengeId,
+    expiresInSeconds: 300,
+    ...(exposeOtpDebugCode ? { debugCode: code } : {}),
+  });
+});
+
+app.post('/auth/otp/verify', (req, res) => {
+  const { challengeId, phone, code } = req.body as {
+    challengeId?: string;
+    phone?: string;
+    code?: string;
+  };
+  const normalizedPhone = phone?.replace(/\D/g, '').trim();
+  const normalizedCode = code?.trim();
+
+  if (!challengeId || !normalizedPhone || !normalizedCode) {
+    res.status(400).json({ error: 'challengeId, phone, and code are required' });
+    return;
+  }
+
+  const challenge = otpChallenges.get(challengeId);
+  if (!challenge) {
+    res.status(404).json({ error: 'OTP challenge not found' });
+    return;
+  }
+
+  if (challenge.phone !== normalizedPhone) {
+    res.status(400).json({ error: 'phone does not match the OTP challenge' });
+    return;
+  }
+
+  if (new Date(challenge.expiresAt).getTime() <= Date.now()) {
+    otpChallenges.delete(challengeId);
+    res.status(410).json({ error: 'OTP challenge expired' });
+    return;
+  }
+
+  if (challenge.code !== normalizedCode) {
+    res.status(401).json({ error: 'Invalid OTP code' });
+    return;
+  }
+
+  otpChallenges.delete(challengeId);
+
+  const token = `otp_${crypto.randomUUID()}`;
+  otpVerifications.set(token, {
+    token,
+    phone: normalizedPhone,
+    verifiedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 1000 * 60 * 10).toISOString(),
+  });
+
+  res.json({
+    verified: true,
+    otpToken: token,
+    phone: normalizedPhone,
+    expiresInSeconds: 600,
+  });
+});
+
 app.post('/customer/onboard', (req, res) => {
-  const input = req.body as Partial<CustomerOnboardingRequest>;
+  const input = req.body as Partial<CustomerOnboardingRequest> & { otpToken?: string };
   const name = input.name?.trim();
   const deliveryZone = input.deliveryZone?.trim();
   const loginId = input.loginId?.trim();
   const password = input.password?.trim();
   const defaultAddress = input.defaultAddress?.trim();
+  const otpToken = input.otpToken?.trim();
+  const otpVerification = otpToken ? otpVerifications.get(otpToken) : undefined;
+  const otpActive =
+    otpVerification &&
+    otpVerification.phone === loginId?.replace(/\D/g, '') &&
+    new Date(otpVerification.expiresAt).getTime() > Date.now();
 
-  if (!name || !deliveryZone || !loginId || !password || !defaultAddress) {
-    res.status(400).json({ error: 'name, deliveryZone, loginId, password, and defaultAddress are required' });
+  if (!name || !deliveryZone || !loginId || !defaultAddress) {
+    res.status(400).json({ error: 'name, deliveryZone, loginId, and defaultAddress are required' });
     return;
   }
 
-  if (password.length < 6) {
+  if (!password && !otpActive) {
+    res.status(400).json({ error: 'password or a valid otpToken is required' });
+    return;
+  }
+
+  if (password && password.length < 6) {
     res.status(400).json({ error: 'password must be at least 6 characters long' });
     return;
   }
+
+  const effectivePassword = password || crypto.randomUUID().slice(0, 12);
 
   const existingAuthByLogin = customerAuthRecords.find(
     (entry) => entry.username === loginId && entry.active !== false,
@@ -432,7 +807,7 @@ app.post('/customer/onboard', (req, res) => {
     loginId,
     displayName: name,
     role: 'customer',
-    password,
+    password: effectivePassword,
     customerId: customer.id,
     active: true,
     createdAt: now,
@@ -443,12 +818,47 @@ app.post('/customer/onboard', (req, res) => {
   };
   customerAuthRecords.unshift(authRecord);
 
+  const branchNow = new Date().toISOString();
+  const primaryBranch: CustomerBranch = {
+    id: `branch_${customer.id}_main`,
+    customerId: customer.id,
+    name: `${name} - Main`,
+    code: `${customer.id.slice(-4).toUpperCase()}-MAIN`,
+    status: 'active',
+    serviceZone: deliveryZone,
+    deliveryNotes: defaultAddress,
+    createdAt: branchNow,
+    updatedAt: branchNow,
+  };
+  customerBranches.unshift(primaryBranch);
+
+  const accountUser: CustomerUserMembership = {
+    id: `cust_user_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: customer.id,
+    branchId: primaryBranch.id,
+    displayName: name,
+    role: 'admin',
+    status: 'active',
+    phone: loginId,
+    createdAt: branchNow,
+    updatedAt: branchNow,
+  };
+  customerUsers.unshift(accountUser);
+
   const session = issueSession(toSessionUser(authRecord));
   recordAudit({
     kind: 'customer_onboarded',
     actor: loginId,
     summary: `Created customer portal profile for ${customer.id}.`,
     referenceId: customer.id,
+  });
+  enqueueNotification({
+    customerId: customer.id,
+    channel: 'in_app',
+    templateCode: 'customer_onboarded',
+    subject: `Welcome ${customer.name}`,
+    correlationKey: `onboard:${customer.id}`,
+    recipient: customer.id,
   });
   rebuildOperationalState();
   persistStateSoon();
@@ -462,6 +872,7 @@ app.post('/customer/onboard', (req, res) => {
       role: session.user.role,
       customerId: session.user.customerId,
     },
+    otpVerified: Boolean(otpActive),
     dashboard: buildCustomerDashboard(customer.id),
   });
 });
@@ -474,6 +885,30 @@ app.get('/customer/dashboard', authenticate, requireAnyRole(['customer']), (req,
   }
 
   res.json(buildCustomerDashboard(customerId));
+});
+
+app.get('/customer/branches', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  res.json({
+    branches: customerBranches.filter((entry) => entry.customerId === customerId),
+  });
+});
+
+app.get('/customer/users', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  res.json({
+    users: customerUsers.filter((entry) => entry.customerId === customerId),
+  });
 });
 
 app.get('/customer/orders', authenticate, requireAnyRole(['customer']), (req, res) => {
@@ -505,12 +940,34 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
   const body = req.body as Partial<CustomerOrderCreateRequest>;
   const serviceDate = body.serviceDate?.trim() || getDefaultServiceDate(customer);
   const slotId = body.slotId?.trim();
+  const branchId = body.branchId?.trim() || null;
   const paymentMode = body.paymentMode ?? 'prepaid';
   const items = Array.isArray(body.items) ? body.items : [];
+  const branchesForCustomer = customerBranches.filter((entry) => entry.customerId === customer.id);
+  const selectedBranch = branchId
+    ? branchesForCustomer.find((entry) => entry.id === branchId) ?? null
+    : branchesForCustomer.find((entry) => entry.status === 'active') ?? branchesForCustomer[0] ?? null;
+
+  if (branchId && !selectedBranch) {
+    const reason = 'Selected branch was not found for this customer.';
+    recordCustomerOrderRejection(customer, attemptId, reason);
+    persistStateSoon();
+    res.status(400).json({ error: reason });
+    return;
+  }
+
+  if (selectedBranch && selectedBranch.status !== 'active') {
+    const reason = `Selected branch is ${selectedBranch.status}.`;
+    recordCustomerOrderRejection(customer, attemptId, reason);
+    persistStateSoon();
+    res.status(400).json({ error: reason });
+    return;
+  }
 
   const validationError = validateCustomerOrderDraft(customer, {
     serviceDate,
     slotId,
+    branchZone: selectedBranch?.serviceZone,
     paymentMode,
     items,
   });
@@ -545,6 +1002,7 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
   const order = {
     id: `ord_${crypto.randomUUID()}`,
     customerId: customer.id,
+    branchId: selectedBranch?.id ?? null,
     serviceDate,
     slotId: resolvedSlotId,
     paymentMode,
@@ -566,6 +1024,14 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
     summary: `Placed customer order ${order.id} for ${customer.id} on ${serviceDate} in ${resolvedSlotId}.`,
     referenceId: order.id,
   });
+  enqueueNotification({
+    customerId: customer.id,
+    channel: 'in_app',
+    templateCode: 'order_confirmation',
+    subject: `Order ${order.id} confirmed`,
+    correlationKey: `order-confirm:${order.id}`,
+    recipient: customer.id,
+  });
   rebuildOperationalState();
   persistStateSoon();
 
@@ -575,15 +1041,15 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
   });
 });
 
-app.get('/catalog', (_req, res) => {
+app.get('/catalog', authenticate, (_req, res) => {
   res.json({ products, capacities, slots });
 });
 
-app.get('/customers', (_req, res) => {
+app.get('/customers', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
   res.json({ customers });
 });
 
-app.get('/customers/:id', (req, res) => {
+app.get('/customers/:id', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
   const customerId = readRouteParam(req.params.id);
   const customer = customers.find((entry) => entry.id === customerId);
   if (!customer) {
@@ -593,6 +1059,8 @@ app.get('/customers/:id', (req, res) => {
 
   res.json({
     customer,
+    branches: customerBranches.filter((entry) => entry.customerId === customer.id),
+    users: customerUsers.filter((entry) => entry.customerId === customer.id),
     orders: orders.filter((entry) => entry.customerId === customer.id),
     productionBatches,
   });
@@ -602,6 +1070,176 @@ app.get('/customers/:id/360', authenticate, requireAnyRole(['owner', 'manager', 
   const customerId = readRouteParam(req.params.id);
   const snapshot = buildCustomer360(customerId);
   res.json(snapshot);
+});
+
+app.get('/customers/:id/branches', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const customerId = readRouteParam(req.params.id);
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  res.json({
+    branches: customerBranches.filter((entry) => entry.customerId === customer.id),
+  });
+});
+
+app.post('/customers/:id/branches', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const customerId = readRouteParam(req.params.id);
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const body = req.body as {
+    name?: string;
+    code?: string;
+    serviceZone?: string;
+    deliveryNotes?: string;
+    status?: CustomerBranch['status'];
+  };
+  const name = body.name?.trim();
+  const code = body.code?.trim().toUpperCase();
+  const serviceZone = body.serviceZone?.trim();
+  if (!name || !code || !serviceZone) {
+    res.status(400).json({ error: 'name, code, and serviceZone are required' });
+    return;
+  }
+
+  const existing = customerBranches.find((entry) => entry.customerId === customer.id && entry.code === code);
+  if (existing) {
+    res.status(409).json({ error: 'A branch with this code already exists for the customer' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const branch: CustomerBranch = {
+    id: `branch_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: customer.id,
+    name,
+    code,
+    status: body.status ?? 'active',
+    serviceZone,
+    deliveryNotes: body.deliveryNotes?.trim() || undefined,
+    createdAt: now,
+    updatedAt: now,
+  };
+  customerBranches.unshift(branch);
+  recordAudit({
+    kind: 'customer_onboarded',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Created branch ${branch.code} for ${customer.id}.`,
+    referenceId: branch.id,
+  });
+  persistStateSoon();
+
+  res.status(201).json({ branch, branches: customerBranches.filter((entry) => entry.customerId === customer.id) });
+});
+
+app.get('/customers/:id/users', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const customerId = readRouteParam(req.params.id);
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  res.json({
+    users: customerUsers.filter((entry) => entry.customerId === customer.id),
+  });
+});
+
+app.post('/customers/:id/users/invite', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const customerId = readRouteParam(req.params.id);
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const body = req.body as {
+    displayName?: string;
+    branchId?: string | null;
+    role?: CustomerUserMembership['role'];
+    phone?: string;
+    email?: string;
+  };
+  const displayName = body.displayName?.trim();
+  const role = body.role ?? 'viewer';
+  const branchId = body.branchId?.trim() || null;
+  const branch = branchId ? customerBranches.find((entry) => entry.id === branchId && entry.customerId === customer.id) : null;
+  if (branchId && !branch) {
+    res.status(400).json({ error: 'branchId does not belong to this customer' });
+    return;
+  }
+
+  if (!displayName) {
+    res.status(400).json({ error: 'displayName is required' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const user: CustomerUserMembership = {
+    id: `cust_user_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: customer.id,
+    branchId,
+    displayName,
+    role,
+    status: 'invited',
+    phone: body.phone?.trim() || undefined,
+    email: body.email?.trim() || undefined,
+    createdAt: now,
+    updatedAt: now,
+  };
+  customerUsers.unshift(user);
+  recordAudit({
+    kind: 'customer_onboarded',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Invited customer user ${displayName} for ${customer.id}.`,
+    referenceId: user.id,
+  });
+  persistStateSoon();
+
+  res.status(201).json({ user, users: customerUsers.filter((entry) => entry.customerId === customer.id) });
+});
+
+app.get('/branch-roles', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
+  res.json({
+    roles: [
+      { code: 'admin', name: 'Admin', description: 'Can manage branches, users, and approvals.' },
+      { code: 'buyer', name: 'Buyer', description: 'Can place and manage orders for a branch.' },
+      { code: 'manager', name: 'Manager', description: 'Can review orders and requests.' },
+      { code: 'viewer', name: 'Viewer', description: 'Read-only access for visibility.' },
+    ],
+  });
+});
+
+app.get('/approval-rules', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
+  res.json({
+    rules: branchApprovalRules,
+  });
+});
+
+app.post('/branches/:branchId/serviceability/check', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts', 'customer']), (req, res) => {
+  const branchId = readRouteParam(req.params.branchId);
+  const branch = customerBranches.find((entry) => entry.id === branchId);
+  if (!branch) {
+    res.status(404).json({ error: 'Branch not found' });
+    return;
+  }
+
+  const customer = customers.find((entry) => entry.id === branch.customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  res.json({
+    branch,
+    serviceability: buildCustomerServiceability({ ...customer, deliveryZone: branch.serviceZone }, getDefaultServiceDate(customer)),
+  });
 });
 
 app.get('/support/cases', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
@@ -652,6 +1290,15 @@ app.post('/support/cases', authenticate, requireAnyRole(['owner', 'manager', 'su
     summary: `Opened support case ${supportCase.id} for ${customerId}. ${supportCase.subject}`,
     referenceId: supportCase.id,
   });
+  enqueueNotification({
+    customerId,
+    channel: 'in_app',
+    templateCode: 'support_case_opened',
+    subject: `Support case opened for ${customer.name}`,
+    correlationKey: `support-open:${supportCase.id}`,
+    recipient: customer.id,
+  });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.status(201).json({ supportCase, supportCases, customer: buildCustomer360(customerId) });
@@ -692,9 +1339,71 @@ app.post('/support/cases/:id/transition', authenticate, requireAnyRole(['owner',
     summary: `Support case ${supportCase.id} moved to ${status}. ${note ?? ''}`.trim(),
     referenceId: supportCase.id,
   });
+  enqueueNotification({
+    customerId: supportCase.customerId,
+    channel: 'in_app',
+    templateCode: 'support_case_transition',
+    subject: `Support case ${supportCase.subject} moved to ${status}`,
+    correlationKey: `support-transition:${supportCase.id}:${status}`,
+    recipient: supportCase.customerId,
+  });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.json({ supportCase, supportCases, customer: buildCustomer360(supportCase.customerId) });
+});
+
+app.get('/support/cases/:id/messages', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const messages = supportCaseMessages.filter((entry) => entry.caseId === id).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  res.json({ messages });
+});
+
+app.post('/support/cases/:id/messages', authenticate, requireAnyRole(['owner', 'manager', 'support']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const supportCase = supportCases.find((entry) => entry.id === id);
+  if (!supportCase) {
+    res.status(404).json({ error: 'Support case not found' });
+    return;
+  }
+
+  const { message, messageType = 'internal' } = req.body as {
+    message?: string;
+    messageType?: SupportCaseMessageRecord['messageType'];
+  };
+  if (!message?.trim()) {
+    res.status(400).json({ error: 'message is required' });
+    return;
+  }
+
+  const supportMessage: SupportCaseMessageRecord = {
+    id: `msg_${crypto.randomUUID()}`,
+    caseId: supportCase.id,
+    messageType,
+    message: message.trim(),
+    authorRole: req.session?.user.role ?? 'system',
+    authorId: req.session?.user.username ?? 'system',
+    createdAt: new Date().toISOString(),
+  };
+  supportCaseMessages.unshift(supportMessage);
+  supportCase.lastUpdatedAt = supportMessage.createdAt;
+  recordAudit({
+    kind: 'support_case_updated',
+    actor: req.session?.user.role ?? 'support',
+    summary: `Added message to support case ${supportCase.id}.`,
+    referenceId: supportCase.id,
+  });
+  enqueueNotification({
+    customerId: supportCase.customerId,
+    channel: 'in_app',
+    templateCode: 'support_case_update',
+    subject: `Support case ${supportCase.subject} updated`,
+    correlationKey: `support:${supportCase.id}:${supportMessage.id}`,
+    recipient: supportCase.customerId,
+  });
+  rebuildOperationalState();
+  persistStateSoon();
+  res.status(201).json({ message: supportMessage, messages: supportCaseMessages.filter((entry) => entry.caseId === id) });
 });
 
 app.post('/customers/:id/notes', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
@@ -726,6 +1435,7 @@ app.post('/customers/:id/notes', authenticate, requireAnyRole(['owner', 'manager
     summary: `Added customer note for ${id}. ${customerNote.note}`,
     referenceId: customerNote.id,
   });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.status(201).json({ note: customerNote, customer: buildCustomer360(id) });
@@ -744,9 +1454,28 @@ app.get(
   },
 );
 
+app.get('/customer/standing-orders', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  res.json({
+    standingOrders: standingOrders.filter((entry) => entry.customerId === customerId),
+    standingOrderRuns: standingOrderRuns.filter((entry) =>
+      standingOrders.some((order) => order.id === entry.standingOrderId && order.customerId === customerId),
+    ),
+    standingOrderPauses: standingOrderPauses.filter((entry) =>
+      standingOrders.some((order) => order.id === entry.standingOrderId && order.customerId === customerId),
+    ),
+  });
+});
+
 app.post('/standing-orders', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
   const body = req.body as Partial<{
     customerId: string;
+    branchId: string | null;
     status: StandingOrder['status'];
     deliveryDays: number[];
     slotId: string;
@@ -767,6 +1496,15 @@ app.post('/standing-orders', authenticate, requireAnyRole(['owner', 'manager', '
     return;
   }
 
+  const branchId = body.branchId?.trim() || null;
+  const branch = branchId
+    ? customerBranches.find((entry) => entry.id === branchId && entry.customerId === customer.id)
+    : customerBranches.find((entry) => entry.customerId === customer.id && entry.status === 'active') ?? null;
+  if (branchId && !branch) {
+    res.status(400).json({ error: 'branchId does not belong to this customer' });
+    return;
+  }
+
   if (!body.slotId?.trim() || !Array.isArray(body.deliveryDays) || !Array.isArray(body.items) || body.items.length === 0) {
     res.status(400).json({ error: 'deliveryDays, slotId, and items are required' });
     return;
@@ -776,6 +1514,7 @@ app.post('/standing-orders', authenticate, requireAnyRole(['owner', 'manager', '
   const standingOrder: StandingOrder = {
     id: `so_${crypto.randomUUID()}`,
     customerId,
+    branchId: branch?.id ?? branchId,
     status: body.status ?? 'draft',
     schedule: {
       deliveryDays: normalizeDeliveryDays(body.deliveryDays),
@@ -795,9 +1534,92 @@ app.post('/standing-orders', authenticate, requireAnyRole(['owner', 'manager', '
     summary: `Created standing order ${standingOrder.id} for ${customer.name}.`,
     referenceId: standingOrder.id,
   });
+  enqueueNotification({
+    customerId,
+    channel: 'in_app',
+    templateCode: 'standing_order_created',
+    subject: `Standing order created for ${customer.name}`,
+    correlationKey: `standing-create:${standingOrder.id}`,
+    recipient: customer.id,
+  });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.status(201).json({ standingOrder, standingOrders });
+});
+
+app.post('/customer/standing-orders', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const body = req.body as Partial<{
+    branchId: string | null;
+    status: StandingOrder['status'];
+    deliveryDays: number[];
+    slotId: string;
+    paymentMode: StandingOrder['schedule']['paymentMode'];
+    items: StandingOrder['schedule']['items'];
+    notes: string;
+  }>;
+  const branchId = body.branchId?.trim() || null;
+  const branch = branchId
+    ? customerBranches.find((entry) => entry.id === branchId && entry.customerId === customer.id)
+    : customerBranches.find((entry) => entry.customerId === customer.id && entry.status === 'active') ?? null;
+  if (branchId && !branch) {
+    res.status(400).json({ error: 'branchId does not belong to this customer' });
+    return;
+  }
+
+  if (!body.slotId?.trim() || !Array.isArray(body.deliveryDays) || !Array.isArray(body.items) || body.items.length === 0) {
+    res.status(400).json({ error: 'deliveryDays, slotId, and items are required' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const standingOrder: StandingOrder = {
+    id: `so_${crypto.randomUUID()}`,
+    customerId,
+    branchId: branch?.id ?? branchId,
+    status: body.status ?? 'draft',
+    schedule: {
+      deliveryDays: normalizeDeliveryDays(body.deliveryDays),
+      slotId: body.slotId.trim(),
+      paymentMode: body.paymentMode ?? 'prepaid',
+      items: sanitizeStandingOrderItems(body.items),
+      notes: body.notes?.trim() || undefined,
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  standingOrders.unshift(standingOrder);
+  recordAudit({
+    kind: 'standing_order_created',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Customer created standing order ${standingOrder.id} for ${customer.name}.`,
+    referenceId: standingOrder.id,
+  });
+  enqueueNotification({
+    customerId,
+    channel: 'in_app',
+    templateCode: 'standing_order_created',
+    subject: `Standing order created for ${customer.name}`,
+    correlationKey: `standing-create:${standingOrder.id}`,
+    recipient: customer.id,
+  });
+  rebuildOperationalState();
+  persistStateSoon();
+
+  res.status(201).json({ standingOrder, standingOrders: standingOrders.filter((entry) => entry.customerId === customerId) });
 });
 
 app.patch('/standing-orders/:id', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
@@ -810,6 +1632,7 @@ app.patch('/standing-orders/:id', authenticate, requireAnyRole(['owner', 'manage
 
   const body = req.body as Partial<{
     status: StandingOrder['status'];
+    branchId: string | null;
     deliveryDays: number[];
     slotId: string;
     paymentMode: StandingOrder['schedule']['paymentMode'];
@@ -819,6 +1642,19 @@ app.patch('/standing-orders/:id', authenticate, requireAnyRole(['owner', 'manage
 
   if (body.status) {
     standingOrder.status = body.status;
+  }
+  if (body.branchId !== undefined) {
+    const branchId = body.branchId?.trim() || null;
+    if (branchId) {
+      const branch = customerBranches.find((entry) => entry.id === branchId && entry.customerId === standingOrder.customerId);
+      if (!branch) {
+        res.status(400).json({ error: 'branchId does not belong to this customer' });
+        return;
+      }
+      standingOrder.branchId = branch.id;
+    } else {
+      standingOrder.branchId = null;
+    }
   }
   if (Array.isArray(body.deliveryDays)) {
     standingOrder.schedule.deliveryDays = normalizeDeliveryDays(body.deliveryDays);
@@ -843,6 +1679,7 @@ app.patch('/standing-orders/:id', authenticate, requireAnyRole(['owner', 'manage
     summary: `Updated standing order ${standingOrder.id}.`,
     referenceId: standingOrder.id,
   });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.json({ standingOrder, standingOrders });
@@ -885,6 +1722,15 @@ app.post('/standing-orders/:id/pause', authenticate, requireAnyRole(['owner', 'm
     summary: `Paused standing order ${standingOrder.id}. ${reason}`,
     referenceId: standingOrder.id,
   });
+  enqueueNotification({
+    customerId: standingOrder.customerId,
+    channel: 'in_app',
+    templateCode: 'standing_order_paused',
+    subject: `Standing order paused: ${standingOrder.id}`,
+    correlationKey: `standing-pause:${standingOrder.id}:${pause.id}`,
+    recipient: standingOrder.customerId,
+  });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.json({ standingOrder, pause, standingOrders, standingOrderPauses });
@@ -916,6 +1762,15 @@ app.post('/standing-orders/:id/resume', authenticate, requireAnyRole(['owner', '
     summary: `Resumed standing order ${standingOrder.id}.`,
     referenceId: standingOrder.id,
   });
+  enqueueNotification({
+    customerId: standingOrder.customerId,
+    channel: 'in_app',
+    templateCode: 'standing_order_resumed',
+    subject: `Standing order resumed: ${standingOrder.id}`,
+    correlationKey: `standing-resume:${standingOrder.id}`,
+    recipient: standingOrder.customerId,
+  });
+  rebuildOperationalState();
   persistStateSoon();
 
   res.json({ standingOrder, standingOrders, standingOrderPauses });
@@ -929,11 +1784,239 @@ app.post('/standing-orders/generate-runs', authenticate, requireAnyRole(['owner'
   res.json(result);
 });
 
-app.get('/orders', (_req, res) => {
+app.get('/notifications', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({
+    jobs: notificationJobs,
+    deliveries: notificationDeliveries,
+  });
+});
+
+app.post('/notifications/queue', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const { customerId, channel = 'in_app', templateCode = 'manual', subject = 'Manual notification', correlationKey } = req.body as {
+    customerId?: string;
+    channel?: NotificationJob['channel'];
+    templateCode?: string;
+    subject?: string;
+    correlationKey?: string;
+  };
+  if (!customerId || !subject.trim()) {
+    res.status(400).json({ error: 'customerId and subject are required' });
+    return;
+  }
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+  const result = enqueueNotification({
+    customerId,
+    channel,
+    templateCode,
+    subject: subject.trim(),
+    correlationKey: correlationKey?.trim() || `manual:${customerId}:${crypto.randomUUID()}`,
+    recipient: customer.id,
+  });
+  persistStateSoon();
+  res.status(201).json(result);
+});
+
+app.get('/account-health', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({
+    snapshots: accountHealthSnapshots,
+    actions: accountActions,
+  });
+});
+
+app.post('/account-health/:customerId/actions', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const customerId = readRouteParam(req.params.customerId);
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const { actionType, reason, approvedBy = null } = req.body as {
+    actionType?: string;
+    reason?: string;
+    approvedBy?: string | null;
+  };
+
+  if (!actionType?.trim() || !reason?.trim()) {
+    res.status(400).json({ error: 'actionType and reason are required' });
+    return;
+  }
+
+  const action: AccountAction = {
+    id: `acct_action_${crypto.randomUUID()}`,
+    customerId,
+    actionType: actionType.trim(),
+    reason: reason.trim(),
+    createdBy: req.session?.user.username ?? 'system',
+    approvedBy,
+    createdAt: new Date().toISOString(),
+  };
+  accountActions.unshift(action);
+  rebuildOperationalState();
+  persistStateSoon();
+  res.status(201).json({ action, snapshots: accountHealthSnapshots });
+});
+
+app.get('/analytics/overview', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({
+    latest: analyticsSnapshots[0] ?? null,
+    snapshots: analyticsSnapshots,
+    rollups: kpiRollups,
+  });
+});
+
+app.post('/analytics/rebuild', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (_req, res) => {
+  refreshPhase3DerivedState();
+  persistStateSoon();
+  res.json({
+    latest: analyticsSnapshots[0] ?? null,
+    snapshots: analyticsSnapshots,
+    rollups: kpiRollups,
+  });
+});
+
+app.get('/alert-rules', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({ alertRules, alertEvents });
+});
+
+app.get('/customer/requests', authenticate, requireAnyRole(['customer', 'owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  const visibleRequests = req.session?.user.role === 'customer' && customerId
+    ? customerRequests.filter((entry) => entry.customerId === customerId)
+    : customerRequests;
+  res.json({ requests: visibleRequests });
+});
+
+app.post('/customer/requests', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  const { requestType = 'support_follow_up', reason } = req.body as {
+    requestType?: CustomerRequest['requestType'];
+    reason?: string;
+  };
+  if (!reason?.trim()) {
+    res.status(400).json({ error: 'reason is required' });
+    return;
+  }
+
+  const request: CustomerRequest = {
+    id: `req_${crypto.randomUUID()}`,
+    customerId,
+    requestType,
+    status: 'submitted',
+    reason: reason.trim(),
+    createdAt: new Date().toISOString(),
+    decidedAt: null,
+  };
+  customerRequests.unshift(request);
+  enqueueNotification({
+    customerId,
+    channel: 'in_app',
+    templateCode: 'customer_request_submitted',
+    subject: 'Your request was submitted',
+    correlationKey: `request:${request.id}`,
+    recipient: customerId,
+  });
+  rebuildOperationalState();
+  persistStateSoon();
+  res.status(201).json({ request, requests: customerRequests.filter((entry) => entry.customerId === customerId) });
+});
+
+app.get('/customer/addresses', authenticate, requireAnyRole(['customer', 'owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  const visibleAddresses = req.session?.user.role === 'customer' && customerId
+    ? savedAddresses.filter((entry) => entry.customerId === customerId)
+    : savedAddresses;
+  res.json({ addresses: visibleAddresses });
+});
+
+app.post('/customer/addresses', authenticate, requireAnyRole(['customer', 'owner', 'manager', 'support']), (req, res) => {
+  const customerId = req.session?.user.customerId ?? (req.body as { customerId?: string }).customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'customerId is required' });
+    return;
+  }
+
+  const { label, addressLine, deliveryZone } = req.body as {
+    label?: string;
+    addressLine?: string;
+    deliveryZone?: string;
+  };
+  if (!label?.trim() || !addressLine?.trim() || !deliveryZone?.trim()) {
+    res.status(400).json({ error: 'label, addressLine, and deliveryZone are required' });
+    return;
+  }
+
+  const address: SavedAddress = {
+    id: `addr_${crypto.randomUUID()}`,
+    customerId,
+    label: label.trim(),
+    addressLine: addressLine.trim(),
+    deliveryZone: deliveryZone.trim(),
+    active: true,
+  };
+  savedAddresses.unshift(address);
+  persistStateSoon();
+  res.status(201).json({ address, addresses: savedAddresses.filter((entry) => entry.customerId === customerId) });
+});
+
+app.get('/reports', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (_req, res) => {
+  res.json({ reportExports });
+});
+
+app.post('/reports/export', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const { reportCode = 'operations_overview' } = req.body as { reportCode?: string };
+  const payload = {
+    customers: customers.length,
+    orders: orders.length,
+    supportCases: supportCases.length,
+    standingOrders: standingOrders.length,
+    analytics: analyticsSnapshots[0] ?? null,
+    health: accountHealthSnapshots.slice(0, 5),
+  };
+  const report: ReportExport = {
+    id: `report_${crypto.randomUUID()}`,
+    reportCode,
+    createdBy: req.session?.user.username ?? 'system',
+    createdAt: new Date().toISOString(),
+    payloadJson: payload,
+  };
+  reportExports.unshift(report);
+  persistStateSoon();
+  res.status(201).json({ report, reportExports });
+});
+
+app.get('/storage/status', (_req, res) => {
+  const r2Configured = Boolean(
+    process.env.R2_ACCOUNT_ID?.trim() &&
+      process.env.R2_ACCESS_KEY_ID?.trim() &&
+      process.env.R2_SECRET_ACCESS_KEY?.trim() &&
+      process.env.R2_BUCKET_NAME?.trim(),
+  );
+
+  res.json({
+    mode: r2Configured ? 'cloud' : 'demo',
+    r2Configured,
+    uploadStorageEnabled: r2Configured,
+    note: r2Configured
+      ? 'Cloud object storage is ready.'
+      : 'Cloud object storage is not configured yet, so uploads remain in demo mode.',
+  });
+});
+
+app.get('/orders', authenticate, requireAnyRole(['owner', 'manager', 'production', 'delivery', 'support', 'accounts']), (_req, res) => {
   res.json({ orders });
 });
 
-app.get('/production/batches', (_req, res) => {
+app.get('/production/batches', authenticate, requireAnyRole(['owner', 'manager', 'production', 'support']), (_req, res) => {
   res.json({ productionBatches });
 });
 
@@ -953,16 +2036,40 @@ app.post('/production/batches/:id/unlock', authenticate, requireAnyRole(['owner'
   updateBatchStatus(req, res, 'draft', 'batch_unlocked', 'Unlocked production batch.');
 });
 
-app.get('/delivery/manifest', (_req, res) => {
+app.get('/delivery/manifest', authenticate, requireAnyRole(['owner', 'manager', 'delivery']), (_req, res) => {
   res.json({
-    routes: slots.map((slot) => ({
-      slotId: slot.id,
-      label: slot.label,
-      zone: slot.zone,
-      orderCount: orders.filter((order) => order.slotId === slot.id).length,
-      completedOrders: orders.filter((order) => order.slotId === slot.id && order.status === 'delivered').length,
-      failedOrders: orders.filter((order) => order.slotId === slot.id && order.status === 'failed_delivery').length,
-    })),
+    routes: slots.map((slot) => {
+      const routeOrders = orders.filter((order) => order.slotId === slot.id);
+      return {
+        slotId: slot.id,
+        label: slot.label,
+        zone: slot.zone,
+        orderCount: routeOrders.length,
+        completedOrders: routeOrders.filter((order) => order.status === 'delivered').length,
+        failedOrders: routeOrders.filter((order) => order.status === 'failed_delivery').length,
+        stops: routeOrders.map((order, index) => {
+          const customer = customers.find((entry) => entry.id === order.customerId);
+          return {
+            stopNumber: index + 1,
+            orderId: order.id,
+            customerName: customer?.name ?? order.customerId,
+            address:
+              savedAddresses.find((entry) => entry.customerId === order.customerId)?.addressLine ??
+              'Address unavailable',
+            slot: slot.label,
+            status: order.status,
+            note:
+              order.status === 'delivered'
+                ? 'Delivered and signed off.'
+                : order.status === 'failed_delivery'
+                  ? 'Delivery failed and needs follow-up.'
+                  : order.status === 'partial_delivery'
+                    ? 'Partial delivery with return.'
+                    : 'Ready for handoff.',
+          };
+        }),
+      };
+    }),
   });
 });
 
@@ -1020,6 +2127,14 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
         summary: `POD completed for ${order.id}. ${event.note}`.trim(),
         referenceId: order.id,
       });
+      enqueueNotification({
+        customerId: order.customerId,
+        channel: 'in_app',
+        templateCode: 'delivery_completed',
+        subject: `Order ${order.id} delivered`,
+        correlationKey: `delivery-ok:${event.eventId}`,
+        recipient: order.customerId,
+      });
     } else if (event.action === 'delivery_failed') {
       order.status = 'failed_delivery';
       recordAudit({
@@ -1028,6 +2143,14 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
         summary: `Delivery failed for ${order.id}. ${event.note}`.trim(),
         referenceId: order.id,
       });
+      enqueueNotification({
+        customerId: order.customerId,
+        channel: 'in_app',
+        templateCode: 'delivery_failed',
+        subject: `Order ${order.id} delivery failed`,
+        correlationKey: `delivery-failed:${event.eventId}`,
+        recipient: order.customerId,
+      });
     } else {
       order.status = 'partial_delivery';
       recordAudit({
@@ -1035,6 +2158,14 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
         actor: 'delivery',
         summary: `Return captured for ${order.id}. ${event.note}`.trim(),
         referenceId: order.id,
+      });
+      enqueueNotification({
+        customerId: order.customerId,
+        channel: 'in_app',
+        templateCode: 'delivery_return_captured',
+        subject: `Order ${order.id} returned`,
+        correlationKey: `delivery-return:${event.eventId}`,
+        recipient: order.customerId,
       });
     }
 
@@ -1322,6 +2453,52 @@ function recordAudit(entry: Omit<AuditEvent, 'id' | 'createdAt'>) {
   });
 }
 
+function enqueueNotification(_input: {
+  customerId: string;
+  channel: NotificationJob['channel'];
+  templateCode: string;
+  subject: string;
+  correlationKey: string;
+  recipient: string;
+}) {
+  const input = _input;
+  const existing = notificationJobs.find((job) => job.correlationKey === input.correlationKey);
+  if (existing) {
+    return {
+      job: existing,
+      deliveries: notificationDeliveries.filter((delivery) => delivery.jobId === existing.id),
+    };
+  }
+
+  const now = new Date().toISOString();
+  const job: NotificationJob = {
+    id: `ntf_${crypto.randomUUID()}`,
+    channel: input.channel,
+    templateCode: input.templateCode,
+    status: 'delivered',
+    correlationKey: input.correlationKey,
+    recipient: input.recipient,
+    subject: input.subject,
+    createdAt: now,
+    sentAt: now,
+  };
+  const delivery: NotificationDelivery = {
+    id: `ntfd_${crypto.randomUUID()}`,
+    jobId: job.id,
+    recipient: input.recipient,
+    providerMessageId: `msg_${crypto.randomUUID().slice(0, 8)}`,
+    status: 'delivered',
+    attemptNo: 1,
+    createdAt: now,
+  };
+  notificationJobs.unshift(job);
+  notificationDeliveries.unshift(delivery);
+  return {
+    job,
+    deliveries: [delivery],
+  };
+}
+
 function queueApproval(input: Omit<ApprovalRequest, 'id' | 'status' | 'createdAt' | 'decidedAt' | 'decidedBy'>) {
   const approval: ApprovalRequest = {
     id: `apr_${crypto.randomUUID()}`,
@@ -1472,6 +2649,8 @@ function buildCustomerDashboard(customerId: string): CustomerDashboardResponse {
   }
 
   const auth = customerAuthRecords.find((entry) => entry.customerId === customer.id && entry.active !== false);
+  const branches = customerBranches.filter((entry) => entry.customerId === customer.id);
+  const users = customerUsers.filter((entry) => entry.customerId === customer.id);
   if (!auth) {
     throw new Error(`Customer auth record for ${customerId} not found`);
   }
@@ -1502,6 +2681,8 @@ function buildCustomerDashboard(customerId: string): CustomerDashboardResponse {
     },
     serviceability: buildCustomerServiceability(customer, defaultServiceDate),
     defaultServiceDate,
+    branches,
+    users,
   };
 }
 
@@ -1512,6 +2693,8 @@ function buildCustomer360(customerId: string): Customer360Response {
   }
 
   const auth = customerAuthRecords.find((entry) => entry.customerId === customer.id && entry.active !== false);
+  const branches = customerBranches.filter((entry) => entry.customerId === customer.id);
+  const users = customerUsers.filter((entry) => entry.customerId === customer.id);
   const notes = customerNotes.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const supportCasesForCustomer = supportCases.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.lastUpdatedAt.localeCompare(left.lastUpdatedAt));
   const standingOrdersForCustomer = standingOrders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -1536,6 +2719,8 @@ function buildCustomer360(customerId: string): Customer360Response {
     timeline,
     supportCases: supportCasesForCustomer,
     standingOrders: standingOrdersForCustomer,
+    branches,
+    users,
     orders: orders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
   };
 }
@@ -1717,6 +2902,7 @@ function validateCustomerOrderDraft(
   draft: {
     serviceDate: string;
     slotId: string | undefined;
+    branchZone?: string;
     paymentMode: PaymentMode;
     items: Array<{ productId?: string; quantity?: number }>;
   },
@@ -1742,8 +2928,9 @@ function validateCustomerOrderDraft(
     return 'Selected slot does not belong to the requested service date';
   }
 
-  if (slot.zone !== customer.deliveryZone) {
-    return `Selected slot is in ${slot.zone} zone, but customer is assigned to ${customer.deliveryZone}.`;
+  const expectedZone = draft.branchZone ?? customer.deliveryZone;
+  if (slot.zone !== expectedZone) {
+    return `Selected slot is in ${slot.zone} zone, but branch is assigned to ${expectedZone}.`;
   }
 
   if (slot.status === 'full' || slot.status === 'locked') {
@@ -1889,7 +3076,13 @@ function generateStandingOrderRuns(serviceDate: string, actor: string) {
     }
 
     const customer = customers.find((entry) => entry.id === standingOrder.customerId);
-    const slot = slots.find((entry) => entry.id === standingOrder.schedule.slotId && entry.serviceDate === serviceDate);
+    const branch = standingOrder.branchId
+      ? customerBranches.find((entry) => entry.id === standingOrder.branchId && entry.customerId === standingOrder.customerId)
+      : null;
+    const slotZone = branch?.serviceZone ?? customer?.deliveryZone;
+    const slot = slots.find(
+      (entry) => entry.id === standingOrder.schedule.slotId && entry.serviceDate === serviceDate && entry.zone === slotZone,
+    );
     const pausedOnDate = isStandingOrderPausedOnDate(standingOrder.id, serviceDate);
     let reason = '';
     let status: StandingOrderRun['status'] = 'generated';
@@ -1952,6 +3145,14 @@ function generateStandingOrderRuns(serviceDate: string, actor: string) {
           orders.unshift(order);
           generatedOrders.push(order);
           generatedOrderId = order.id;
+          enqueueNotification({
+            customerId: customer.id,
+            channel: 'in_app',
+            templateCode: 'standing_order_run_generated',
+            subject: `Standing order run generated for ${serviceDate}`,
+            correlationKey: `standing-run:${standingOrder.id}:${serviceDate}`,
+            recipient: customer.id,
+          });
           if (exposureAmount > 0) {
             customer.outstandingBalance += exposureAmount;
             refreshCustomerRisk(customer);
@@ -1983,9 +3184,7 @@ function generateStandingOrderRuns(serviceDate: string, actor: string) {
     }
   }
 
-  if (generatedOrders.length > 0) {
-    rebuildOperationalState();
-  }
+  rebuildOperationalState();
 
   return {
     serviceDate,
@@ -2016,11 +3215,83 @@ function persistStateSoon() {
   }, 100);
 }
 
+function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot {
+  return {
+    customers: parsed.customers ?? customers,
+    customerBranches: parsed.customerBranches ?? customerBranches,
+    customerUsers: parsed.customerUsers ?? customerUsers,
+    customerAuthRecords: parsed.customerAuthRecords ?? customerAuthRecords,
+    customerNotes: parsed.customerNotes ?? customerNotes,
+    supportCaseMessages: parsed.supportCaseMessages ?? supportCaseMessages,
+    supportCases: parsed.supportCases ?? supportCases,
+    standingOrders: parsed.standingOrders ?? standingOrders,
+    standingOrderRuns: parsed.standingOrderRuns ?? standingOrderRuns,
+    standingOrderPauses: parsed.standingOrderPauses ?? standingOrderPauses,
+    products: parsed.products ?? products,
+    capacities: parsed.capacities ?? capacities,
+    slots: parsed.slots ?? slots,
+    orders: parsed.orders ?? orders,
+    productionBatches: parsed.productionBatches ?? productionBatches,
+    auditEvents: parsed.auditEvents ?? [],
+    erpSyncStatus:
+      parsed.erpSyncStatus ??
+      ({
+        provider: 'vasy',
+        state: 'healthy',
+        lastAttemptAt: new Date().toISOString(),
+        lastSuccessAt: new Date().toISOString(),
+        pendingCount: 1,
+        failedCount: 0,
+      } satisfies ErpSyncStatus),
+    sessions: parsed.sessions ?? [],
+    approvals: parsed.approvals ?? [],
+    deliveryEventIds: parsed.deliveryEventIds ?? [],
+    notificationJobs: parsed.notificationJobs ?? notificationJobs,
+    notificationDeliveries: parsed.notificationDeliveries ?? notificationDeliveries,
+    accountHealthSnapshots: parsed.accountHealthSnapshots ?? accountHealthSnapshots,
+    accountActions: parsed.accountActions ?? accountActions,
+    alertRules: parsed.alertRules ?? alertRules,
+    alertEvents: parsed.alertEvents ?? alertEvents,
+    analyticsSnapshots: parsed.analyticsSnapshots ?? analyticsSnapshots,
+    kpiRollups: parsed.kpiRollups ?? kpiRollups,
+    customerRequests: parsed.customerRequests ?? customerRequests,
+    savedAddresses: parsed.savedAddresses ?? savedAddresses,
+    reportExports: parsed.reportExports ?? reportExports,
+  };
+}
+
+function resolveDatabasePath(databaseUrl: string) {
+  const trimmed = databaseUrl.trim();
+  if (!trimmed) {
+    return join(process.cwd(), 'data', 'aeden-bakes.sqlite');
+  }
+
+  if (trimmed.startsWith('file:')) {
+    return trimmed.slice('file:'.length);
+  }
+
+  return trimmed;
+}
+
+function recordMigration(migrationName: string, source = 'sqlite') {
+  database
+    .prepare(
+      `
+      INSERT INTO migration_runs (migration_name, source, created_at)
+      VALUES (?, ?, ?)
+      `,
+    )
+    .run(migrationName, source, new Date().toISOString());
+}
+
 async function persistState() {
   const snapshot: ApiStateSnapshot = {
     customers,
+    customerBranches,
+    customerUsers,
     customerAuthRecords,
     customerNotes,
+    supportCaseMessages,
     supportCases,
     standingOrders,
     standingOrderRuns,
@@ -2035,85 +3306,80 @@ async function persistState() {
     sessions: [...sessions.values()],
     approvals,
     deliveryEventIds: [...processedDeliveryEventIds],
+    notificationJobs,
+    notificationDeliveries,
+    accountHealthSnapshots,
+    accountActions,
+    alertRules,
+    alertEvents,
+    analyticsSnapshots,
+    kpiRollups,
+    customerRequests,
+    savedAddresses,
+    reportExports,
   };
 
-  await mkdir(dirname(stateFilePath), { recursive: true });
-  await writeFile(stateFilePath, JSON.stringify(snapshot, null, 2), 'utf8');
+  database
+    .prepare(
+      `
+      INSERT INTO app_state (id, snapshot, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        snapshot = excluded.snapshot,
+        updated_at = excluded.updated_at
+      `,
+    )
+    .run(JSON.stringify(snapshot), new Date().toISOString());
+
+  const deleteSessions = database.prepare('DELETE FROM auth_sessions');
+  deleteSessions.run();
+  const insertSession = database.prepare(
+    `
+    INSERT INTO auth_sessions (token, user_json, created_at, expires_at)
+    VALUES (?, ?, ?, ?)
+    `,
+  );
+  for (const session of sessions.values()) {
+    insertSession.run(session.token, JSON.stringify(session.user), session.createdAt, session.expiresAt);
+  }
 }
 
 async function loadState(): Promise<ApiStateSnapshot> {
+  const row = database.prepare('SELECT snapshot FROM app_state WHERE id = 1').get() as
+    | { snapshot: string }
+    | undefined;
+
+  if (row) {
+    const parsed = JSON.parse(row.snapshot) as Partial<ApiStateSnapshot>;
+    const snapshot: ApiStateSnapshot = normalizeSnapshot(parsed);
+    rehydrateState(snapshot);
+    return snapshot;
+  }
+
   try {
     const raw = await readFile(stateFilePath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<ApiStateSnapshot>;
-
-    const snapshot: ApiStateSnapshot = {
-      customers: parsed.customers ?? customers,
-      customerAuthRecords: parsed.customerAuthRecords ?? customerAuthRecords,
-      customerNotes: parsed.customerNotes ?? customerNotes,
-      supportCases: parsed.supportCases ?? supportCases,
-      standingOrders: parsed.standingOrders ?? standingOrders,
-      standingOrderRuns: parsed.standingOrderRuns ?? standingOrderRuns,
-      standingOrderPauses: parsed.standingOrderPauses ?? standingOrderPauses,
-      products: parsed.products ?? products,
-      capacities: parsed.capacities ?? capacities,
-      slots: parsed.slots ?? slots,
-      orders: parsed.orders ?? orders,
-      productionBatches: parsed.productionBatches ?? productionBatches,
-      auditEvents: parsed.auditEvents ?? [],
-      erpSyncStatus:
-        parsed.erpSyncStatus ??
-        ({
-          provider: 'vasy',
-          state: 'healthy',
-          lastAttemptAt: new Date().toISOString(),
-          lastSuccessAt: new Date().toISOString(),
-          pendingCount: 1,
-          failedCount: 0,
-        } satisfies ErpSyncStatus),
-      sessions: parsed.sessions ?? [],
-      approvals: parsed.approvals ?? [],
-      deliveryEventIds: parsed.deliveryEventIds ?? [],
-    };
-
+    const snapshot = normalizeSnapshot(parsed);
     rehydrateState(snapshot);
+    await persistState();
+    recordMigration('json-to-sqlite');
     return snapshot;
   } catch {
-    const snapshot: ApiStateSnapshot = {
-      customers,
-      customerAuthRecords,
-      customerNotes,
-      supportCases,
-      standingOrders,
-      standingOrderRuns,
-      standingOrderPauses,
-      products,
-      capacities,
-      slots,
-      orders,
-      productionBatches,
-      auditEvents: [],
-      erpSyncStatus: {
-        provider: 'vasy',
-        state: 'healthy',
-        lastAttemptAt: new Date().toISOString(),
-        lastSuccessAt: new Date().toISOString(),
-        pendingCount: 1,
-        failedCount: 0,
-      },
-      sessions: [],
-      approvals: [],
-      deliveryEventIds: [],
-    };
-
+    const snapshot = normalizeSnapshot({});
     rehydrateState(snapshot);
+    await persistState();
+    recordMigration('seed-to-sqlite');
     return snapshot;
   }
 }
 
 function rehydrateState(snapshot: ApiStateSnapshot) {
   customers.splice(0, customers.length, ...snapshot.customers);
+  customerBranches.splice(0, customerBranches.length, ...snapshot.customerBranches);
+  customerUsers.splice(0, customerUsers.length, ...snapshot.customerUsers);
   customerAuthRecords.splice(0, customerAuthRecords.length, ...snapshot.customerAuthRecords);
   customerNotes.splice(0, customerNotes.length, ...snapshot.customerNotes);
+  supportCaseMessages.splice(0, supportCaseMessages.length, ...snapshot.supportCaseMessages);
   supportCases.splice(0, supportCases.length, ...snapshot.supportCases);
   standingOrders.splice(0, standingOrders.length, ...snapshot.standingOrders);
   standingOrderRuns.splice(0, standingOrderRuns.length, ...snapshot.standingOrderRuns);
@@ -2125,6 +3391,17 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   productionBatches.splice(0, productionBatches.length, ...snapshot.productionBatches);
   auditEvents.splice(0, auditEvents.length, ...snapshot.auditEvents);
   approvals.splice(0, approvals.length, ...snapshot.approvals);
+  notificationJobs.splice(0, notificationJobs.length, ...snapshot.notificationJobs);
+  notificationDeliveries.splice(0, notificationDeliveries.length, ...snapshot.notificationDeliveries);
+  accountHealthSnapshots.splice(0, accountHealthSnapshots.length, ...snapshot.accountHealthSnapshots);
+  accountActions.splice(0, accountActions.length, ...snapshot.accountActions);
+  alertRules.splice(0, alertRules.length, ...snapshot.alertRules);
+  alertEvents.splice(0, alertEvents.length, ...snapshot.alertEvents);
+  analyticsSnapshots.splice(0, analyticsSnapshots.length, ...snapshot.analyticsSnapshots);
+  kpiRollups.splice(0, kpiRollups.length, ...snapshot.kpiRollups);
+  customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
+  savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
+  reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
   processedDeliveryEventIds.clear();
   for (const eventId of snapshot.deliveryEventIds) {
     processedDeliveryEventIds.add(eventId);
@@ -2138,9 +3415,32 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   erpSyncStatus.failedCount = snapshot.erpSyncStatus.failedCount;
 
   sessions.clear();
-  for (const session of snapshot.sessions) {
-    if (new Date(session.expiresAt).getTime() > Date.now()) {
-      sessions.set(session.token, session);
+  const storedSessions = database.prepare('SELECT token, user_json, created_at, expires_at FROM auth_sessions').all() as Array<{
+    token: string;
+    user_json: string;
+    created_at: string;
+    expires_at: string;
+  }>;
+
+  for (const sessionRow of storedSessions) {
+    if (new Date(sessionRow.expires_at).getTime() <= Date.now()) {
+      database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(sessionRow.token);
+      continue;
+    }
+
+    sessions.set(sessionRow.token, {
+      token: sessionRow.token,
+      user: JSON.parse(sessionRow.user_json) as SessionUser,
+      createdAt: sessionRow.created_at,
+      expiresAt: sessionRow.expires_at,
+    });
+  }
+
+  if (sessions.size === 0) {
+    for (const session of snapshot.sessions) {
+      if (new Date(session.expiresAt).getTime() > Date.now()) {
+        sessions.set(session.token, session);
+      }
     }
   }
 }
@@ -2297,6 +3597,209 @@ function rebuildOperationalState() {
     if (batch.status === 'draft') {
       batch.lines = buildProductionBatchLines(batch.serviceDate);
       batch.generatedAt = batch.generatedAt ?? new Date().toISOString();
+    }
+  }
+
+  refreshPhase3DerivedState();
+}
+
+function refreshPhase3DerivedState() {
+  const now = new Date().toISOString();
+  const nextHealthSnapshots: AccountHealthSnapshot[] = customers
+    .map((customer) => {
+      const customerOrders = orders.filter((entry) => entry.customerId === customer.id && entry.status !== 'cancelled');
+      const failedDeliveries = customerOrders.filter((entry) => entry.status === 'failed_delivery').length;
+      const partialDeliveries = customerOrders.filter((entry) => entry.status === 'partial_delivery').length;
+      const openCases = supportCases.filter(
+        (entry) => entry.customerId === customer.id && !['closed'].includes(entry.status),
+      ).length;
+      const activeStandingOrders = standingOrders.filter(
+        (entry) => entry.customerId === customer.id && entry.status === 'active',
+      ).length;
+      const exposure = customer.outstandingBalance;
+      const exposureRatio = customer.creditLimit > 0 ? exposure / customer.creditLimit : exposure > 0 ? 1 : 0;
+      const riskPenalty = customer.riskState === 'blocked' ? 30 : customer.riskState === 'block_soon' ? 20 : customer.riskState === 'watch' ? 10 : 0;
+      const riskScore = Math.min(
+        100,
+        Math.max(
+          0,
+          Math.round(exposureRatio * 65 + failedDeliveries * 12 + partialDeliveries * 7 + openCases * 8 + activeStandingOrders * 3 + riskPenalty),
+        ),
+      );
+
+      const reasonJson = [
+        `risk=${customer.riskState}`,
+        `exposure=${exposure}`,
+        `open_cases=${openCases}`,
+        `failed_deliveries=${failedDeliveries}`,
+        `partial_deliveries=${partialDeliveries}`,
+      ];
+
+      return {
+        id: `health_${customer.id}`,
+        customerId: customer.id,
+        healthState: customer.riskState,
+        riskScore,
+        exposure,
+        reasonJson,
+        createdAt: now,
+      } satisfies AccountHealthSnapshot;
+    })
+    .sort((left, right) => right.riskScore - left.riskScore);
+
+  accountHealthSnapshots.splice(0, accountHealthSnapshots.length, ...nextHealthSnapshots);
+
+  const today = todayIsoDate();
+  const totalRevenue = orders.reduce((sum, order) => sum + order.amountTotal, 0);
+  const deliveredCount = orders.filter((order) => order.status === 'delivered').length;
+  const fulfilledCount = orders.filter((order) => ['delivered', 'partial_delivery', 'failed_delivery'].includes(order.status)).length;
+  const deliverySuccessRate = fulfilledCount === 0 ? 0 : Math.round((deliveredCount / fulfilledCount) * 100);
+  const repeatCustomers = customers.filter((customer) => orders.filter((order) => order.customerId === customer.id).length > 1).length;
+  const supportOpenCount = supportCases.filter((entry) => !['closed'].includes(entry.status)).length;
+  const activeStandingOrderCount = standingOrders.filter((entry) => entry.status === 'active').length;
+  const watchCustomers = customers.filter((customer) => ['watch', 'block_soon', 'blocked'].includes(customer.riskState)).length;
+  const openRouteCount = slots.filter((slot) => slot.status !== 'locked').length;
+
+  kpiRollups.splice(
+    0,
+    kpiRollups.length,
+    {
+      id: `kpi_orders_${today}`,
+      metricCode: 'order_count',
+      serviceDate: today,
+      value: orders.length,
+      createdAt: now,
+    },
+    {
+      id: `kpi_revenue_${today}`,
+      metricCode: 'revenue_total',
+      serviceDate: today,
+      value: totalRevenue,
+      createdAt: now,
+    },
+    {
+      id: `kpi_delivery_success_${today}`,
+      metricCode: 'delivery_success_rate',
+      serviceDate: today,
+      value: deliverySuccessRate,
+      createdAt: now,
+    },
+    {
+      id: `kpi_support_open_${today}`,
+      metricCode: 'open_support_cases',
+      serviceDate: today,
+      value: supportOpenCount,
+      createdAt: now,
+    },
+    {
+      id: `kpi_standing_active_${today}`,
+      metricCode: 'active_standing_orders',
+      serviceDate: today,
+      value: activeStandingOrderCount,
+      createdAt: now,
+    },
+    {
+      id: `kpi_watch_${today}`,
+      metricCode: 'watch_customers',
+      serviceDate: today,
+      value: watchCustomers,
+      createdAt: now,
+    },
+    {
+      id: `kpi_routes_${today}`,
+      metricCode: 'open_routes',
+      serviceDate: today,
+      value: openRouteCount,
+      createdAt: now,
+    },
+    {
+      id: `kpi_repeat_${today}`,
+      metricCode: 'repeat_customers',
+      serviceDate: today,
+      value: repeatCustomers,
+      createdAt: now,
+    },
+  );
+
+  const analyticsPayload = {
+    snapshotTime: now,
+    totals: {
+      customers: customers.length,
+      orders: orders.length,
+      revenue: totalRevenue,
+      supportOpen: supportOpenCount,
+      activeStandingOrders: activeStandingOrderCount,
+      watchCustomers,
+      repeatCustomers,
+      deliverySuccessRate,
+    },
+    capacity: {
+      booked: capacities.reduce((sum, capacity) => sum + capacity.bookedQuantity, 0),
+      total: capacities.reduce((sum, capacity) => sum + capacity.capacity, 0),
+      fillRate:
+        capacities.reduce((sum, capacity) => sum + capacity.capacity, 0) === 0
+          ? 0
+          : Math.round(
+              (capacities.reduce((sum, capacity) => sum + capacity.bookedQuantity, 0) /
+                capacities.reduce((sum, capacity) => sum + capacity.capacity, 0)) *
+                100,
+            ),
+    },
+  };
+
+  analyticsSnapshots.splice(0, analyticsSnapshots.length, {
+    id: `analytics_${today}_${analyticsSnapshots.length + 1}`,
+    snapshotTime: now,
+    payloadJson: analyticsPayload,
+    createdAt: now,
+  });
+
+  const alertEventsNow: AlertEvent[] = [];
+  for (const rule of alertRules.filter((entry) => entry.active)) {
+    if (rule.ruleCode === 'balance_watch') {
+      const offenders = customers.filter((customer) => ['watch', 'block_soon', 'blocked'].includes(customer.riskState));
+      if (offenders.length > 0) {
+        alertEventsNow.push({
+          id: `alert_${rule.id}_${today}`,
+          ruleId: rule.id,
+          severity: offenders.some((customer) => customer.riskState === 'blocked') ? 'critical' : 'warn',
+          payloadJson: { customerIds: offenders.map((customer) => customer.id), count: offenders.length },
+          createdAt: now,
+          acknowledgedAt: null,
+        });
+      }
+    }
+    if (rule.ruleCode === 'failed_delivery') {
+      const failedOrders = orders.filter((order) => ['failed_delivery', 'partial_delivery'].includes(order.status));
+      if (failedOrders.length > 0) {
+        alertEventsNow.push({
+          id: `alert_${rule.id}_${today}_deliveries`,
+          ruleId: rule.id,
+          severity: failedOrders.some((order) => order.status === 'failed_delivery') ? 'critical' : 'warn',
+          payloadJson: { orderIds: failedOrders.map((order) => order.id), count: failedOrders.length },
+          createdAt: now,
+          acknowledgedAt: null,
+        });
+      }
+    }
+  }
+
+  alertEvents.splice(0, alertEvents.length, ...alertEventsNow);
+
+  const activeNotifications = notificationJobs.filter((job) => job.status !== 'failed');
+  if (activeNotifications.length === 0 && customers.length > 0) {
+    const fallbackCustomer = customers[0];
+    const seed = enqueueNotification({
+      customerId: fallbackCustomer.id,
+      channel: 'in_app',
+      templateCode: 'daily_digest',
+      subject: 'Daily operations digest ready',
+      correlationKey: `digest:${today}`,
+      recipient: fallbackCustomer.id,
+    });
+    if (!activeNotifications.some((job) => job.id === seed.job.id)) {
+      notificationJobs.unshift(seed.job);
+      notificationDeliveries.unshift(...seed.deliveries);
     }
   }
 }

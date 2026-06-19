@@ -1,50 +1,105 @@
 import 'dart:convert';
 
+import 'package:aeden_brand/aeden_brand.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  runApp(const BakeryDeliveryApp());
+  runApp(const AedenDeliveryApp());
 }
 
-const String _apiBaseUrl = 'http://127.0.0.1:4000';
-const String _deliveryUsername = 'delivery';
-const String _deliveryPassword = 'delivery123';
+const String _apiBaseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://127.0.0.1:4000',
+);
+const String _deliveryUsername = String.fromEnvironment(
+  'DELIVERY_USERNAME',
+  defaultValue: 'delivery',
+);
+const String _deliveryPassword = String.fromEnvironment(
+  'DELIVERY_PASSWORD',
+  defaultValue: 'delivery123',
+);
 
-class BakeryDeliveryApp extends StatelessWidget {
-  const BakeryDeliveryApp({super.key});
+class AedenDeliveryApp extends StatelessWidget {
+  const AedenDeliveryApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Aeden Bakes Delivery',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF6A4D2F)),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF8F1E7),
-      ),
-      home: const DeliveryHome(),
+      theme: buildAedenBrandTheme(),
+      home: const DeliveryShell(),
     );
   }
 }
 
-class DeliveryHome extends StatefulWidget {
-  const DeliveryHome({super.key});
+class DeliveryShell extends StatefulWidget {
+  const DeliveryShell({super.key});
 
   @override
-  State<DeliveryHome> createState() => _DeliveryHomeState();
+  State<DeliveryShell> createState() => _DeliveryShellState();
 }
 
-class _DeliveryHomeState extends State<DeliveryHome> {
-  String? _token;
+class _DeliveryShellState extends State<DeliveryShell> {
+  int _tabIndex = 0;
   bool _loading = true;
-  bool _syncing = false;
   String? _error;
-  _DeliverySnapshot? _snapshot;
-  List<_QueuedDeliveryEvent> _queue = [];
-  List<_QueuedDeliveryEvent> _failed = [];
+  String? _token;
+
+  List<_DeliveryTask> _tasks = [
+    _DeliveryTask(
+      stopNumber: 1,
+      slotId: 'slot_morning',
+      orderId: 'ORD-1045',
+      customer: 'Hotel Crescent',
+      address: 'Marine Drive Service Lane',
+      slot: '6:00 - 8:00 AM',
+      status: 'Ready',
+      accent: AedenPalette.goldBright,
+      note: 'Call before gate entry.',
+    ),
+    _DeliveryTask(
+      stopNumber: 2,
+      slotId: 'slot_morning',
+      orderId: 'ORD-1048',
+      customer: 'Cafe Meraki',
+      address: 'Panampilly Nagar',
+      slot: '8:00 - 10:00 AM',
+      status: 'On route',
+      accent: AedenPalette.gold,
+      note: 'Leave at reception if unresponsive.',
+    ),
+    _DeliveryTask(
+      stopNumber: 3,
+      slotId: 'slot_midday',
+      orderId: 'ORD-1051',
+      customer: 'Bakery House',
+      address: 'Edappally',
+      slot: '10:00 - 12:00 PM',
+      status: 'Exception',
+      accent: AedenPalette.red,
+      note: 'Customer unavailable. Return pending.',
+    ),
+    _DeliveryTask(
+      stopNumber: 4,
+      slotId: 'slot_afternoon',
+      orderId: 'ORD-1054',
+      customer: 'Orchid Towers',
+      address: 'Vyttila Junction',
+      slot: '12:00 - 2:00 PM',
+      status: 'Ready',
+      accent: AedenPalette.green,
+      note: 'Photo POD required at lobby desk.',
+    ),
+  ];
+
+  int get _readyCount => _tasks.where((task) => task.status == 'Ready').length;
+  int get _routeCount =>
+      _tasks.where((task) => task.status == 'On route').length;
+  int get _exceptionCount =>
+      _tasks.where((task) => task.status == 'Exception').length;
 
   @override
   void initState() {
@@ -53,15 +108,19 @@ class _DeliveryHomeState extends State<DeliveryHome> {
   }
 
   Future<void> _bootstrap() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _queue = _loadEvents(prefs.getStringList('delivery_outbox'));
-      _failed = _loadEvents(prefs.getStringList('delivery_failed'));
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
 
+    try {
       final loginResponse = await http.post(
         Uri.parse('$_apiBaseUrl/auth/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'username': _deliveryUsername, 'password': _deliveryPassword}),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': _deliveryUsername,
+          'password': _deliveryPassword,
+        }),
       );
       if (loginResponse.statusCode < 200 || loginResponse.statusCode >= 300) {
         throw Exception('Delivery login failed with status ${loginResponse.statusCode}');
@@ -69,10 +128,13 @@ class _DeliveryHomeState extends State<DeliveryHome> {
 
       final loginJson = jsonDecode(loginResponse.body) as Map<String, dynamic>;
       _token = loginJson['token'] as String?;
-      await _refreshSnapshot();
-      await _syncQueue();
+      await _refreshTasks();
     } catch (error) {
-      _error = error.toString();
+      if (mounted) {
+        setState(() {
+          _error = error.toString();
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -82,260 +144,1088 @@ class _DeliveryHomeState extends State<DeliveryHome> {
     }
   }
 
-  Future<void> _refreshSnapshot() async {
+  Map<String, String> _authHeaders() {
+    final token = _token;
+    if (token == null) {
+      return const {'Content-Type': 'application/json'};
+    }
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $token',
+    };
+  }
+
+  Color _accentForStatus(String status) {
+    switch (status) {
+      case 'delivered':
+        return AedenPalette.green;
+      case 'failed_delivery':
+        return AedenPalette.red;
+      case 'partial_delivery':
+        return AedenPalette.gold;
+      default:
+        return AedenPalette.goldBright;
+    }
+  }
+
+  Future<void> _refreshTasks() async {
     final token = _token;
     if (token == null) {
       throw Exception('Missing delivery session token');
     }
 
-    final responses = await Future.wait([
-      http.get(Uri.parse('$_apiBaseUrl/delivery/manifest'), headers: _authHeaders(token)),
-      http.get(Uri.parse('$_apiBaseUrl/orders'), headers: _authHeaders(token)),
-      http.get(Uri.parse('$_apiBaseUrl/customers'), headers: _authHeaders(token)),
-    ]);
+    final response = await http.get(
+      Uri.parse('$_apiBaseUrl/delivery/manifest'),
+      headers: _authHeaders(),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Delivery manifest failed with status ${response.statusCode}');
+    }
 
-    for (final response in responses) {
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception('API returned ${response.statusCode}');
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    final routes = (payload['routes'] as List<dynamic>? ?? const []);
+    final tasks = <_DeliveryTask>[];
+    for (final route in routes) {
+      final routeMap = route as Map<String, dynamic>;
+      final stops = routeMap['stops'] as List<dynamic>? ?? const [];
+      for (final stop in stops) {
+        final stopMap = stop as Map<String, dynamic>;
+        tasks.add(
+          _DeliveryTask(
+            stopNumber: stopMap['stopNumber'] as int? ?? tasks.length + 1,
+            slotId: routeMap['slotId'] as String? ?? '',
+            orderId: stopMap['orderId'] as String? ?? 'unknown',
+            customer: stopMap['customerName'] as String? ?? 'Unknown customer',
+            address: stopMap['address'] as String? ?? 'Address unavailable',
+            slot: routeMap['label'] as String? ?? 'Route',
+            status: stopMap['status'] as String? ?? 'Ready',
+            accent: _accentForStatus(stopMap['status'] as String? ?? 'Ready'),
+            note: stopMap['note'] as String? ?? 'Ready for handoff.',
+          ),
+        );
       }
     }
 
-    final manifestJson = jsonDecode(responses[0].body) as Map<String, dynamic>;
-    final ordersJson = jsonDecode(responses[1].body) as Map<String, dynamic>;
-    final customersJson = jsonDecode(responses[2].body) as Map<String, dynamic>;
-
-    _snapshot = _DeliverySnapshot.fromJson(
-      manifestJson,
-      ordersJson: ordersJson,
-      customersJson: customersJson,
-    );
+    if (tasks.isEmpty) {
+      tasks.addAll(_tasks);
+    }
 
     if (mounted) {
-      setState(() {});
-    }
-  }
-
-  Future<void> _queueEvent(_QueuedDeliveryEvent event) async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _queue = [..._queue, event];
-    });
-    await prefs.setStringList('delivery_outbox', _queue.map((entry) => jsonEncode(entry.toJson())).toList());
-    await _syncQueue();
-  }
-
-  Future<void> _syncQueue() async {
-    final token = _token;
-    if (token == null || _queue.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      _syncing = true;
-    });
-
-    try {
-      final response = await http.post(
-        Uri.parse('$_apiBaseUrl/delivery/writeback'),
-        headers: {
-          'Content-Type': 'application/json',
-          ..._authHeaders(token),
-        },
-        body: jsonEncode({
-          'events': _queue.map((entry) => entry.toJson()).toList(),
-        }),
-      );
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception('Delivery writeback failed with status ${response.statusCode}');
-      }
-
-      final payload = jsonDecode(response.body) as Map<String, dynamic>;
-      final acceptedIds = Set<String>.from((payload['acceptedEventIds'] as List<dynamic>? ?? const []).cast<String>());
-      final duplicateIds = Set<String>.from((payload['duplicateEventIds'] as List<dynamic>? ?? const []).cast<String>());
-      final rejectedIds = Set<String>.from((payload['rejectedEventIds'] as List<dynamic>? ?? const []).cast<String>());
-
-      final remaining = _queue
-          .where(
-            (entry) =>
-                !acceptedIds.contains(entry.eventId) &&
-                !duplicateIds.contains(entry.eventId) &&
-                !rejectedIds.contains(entry.eventId),
-          )
-          .toList(growable: false);
-
-      final failed = _queue
-          .where((entry) => rejectedIds.contains(entry.eventId))
-          .toList(growable: false);
-
       setState(() {
-        _queue = remaining;
-        _failed = [..._failed, ...failed];
+        _tasks = tasks;
         _error = null;
       });
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList('delivery_outbox', _queue.map((entry) => jsonEncode(entry.toJson())).toList());
-      await prefs.setStringList('delivery_failed', _failed.map((entry) => jsonEncode(entry.toJson())).toList());
-      await _refreshSnapshot();
-    } catch (error) {
-      setState(() {
-        _error = error.toString();
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _syncing = false;
-        });
-      }
     }
   }
 
-  Future<void> _markOrder({
-    required String orderId,
-    required String slotId,
-    required _DeliveryAction action,
-    required String note,
-  }) async {
-    final event = _QueuedDeliveryEvent(
-      eventId: 'evt_${DateTime.now().microsecondsSinceEpoch}',
-      orderId: orderId,
-      slotId: slotId,
-      action: action,
-      note: note,
-      capturedAt: DateTime.now().toIso8601String(),
+  Future<void> _sendWriteback(
+    _DeliveryTask task,
+    String action,
+    String note,
+    String statusLabel,
+    Color accent,
+  ) async {
+    final token = _token;
+    if (token == null) {
+      throw Exception('Missing delivery session token');
+    }
+
+    final eventId = '${action}_${task.orderId}_${DateTime.now().millisecondsSinceEpoch}';
+    final response = await http.post(
+      Uri.parse('$_apiBaseUrl/delivery/writeback'),
+      headers: _authHeaders(),
+      body: jsonEncode({
+        'events': [
+          {
+            'eventId': eventId,
+            'orderId': task.orderId,
+            'slotId': task.slotId,
+            'action': action,
+            'note': note,
+          },
+        ],
+      }),
     );
 
-    await _queueEvent(event);
-  }
-
-  Map<String, String> _authHeaders(String token) => {'Authorization': 'Bearer $token'};
-
-  List<_QueuedDeliveryEvent> _loadEvents(List<String>? raw) {
-    if (raw == null) {
-      return [];
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Writeback failed with status ${response.statusCode}');
     }
 
-    return raw
-        .map((entry) => _QueuedDeliveryEvent.fromJson(jsonDecode(entry) as Map<String, dynamic>))
-        .toList(growable: false);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _tasks = _tasks
+          .map(
+            (entry) => entry.orderId == task.orderId
+                ? entry.copyWith(status: statusLabel, accent: accent)
+                : entry,
+          )
+          .toList(growable: false);
+    });
+    await _refreshTasks();
+  }
+
+  void _markPodComplete(String orderId) {
+    final task = _tasks.firstWhere((entry) => entry.orderId == orderId);
+    _sendWriteback(
+      task,
+      'pod_completed',
+      'Proof of delivery captured from the driver lane.',
+      'Delivered',
+      AedenPalette.green,
+    ).catchError((error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.toString())),
+        );
+      }
+    });
+  }
+
+  void _markFailed(String orderId) {
+    final task = _tasks.firstWhere((entry) => entry.orderId == orderId);
+    _sendWriteback(
+      task,
+      'delivery_failed',
+      'Delivery could not be completed at the door.',
+      'Failed',
+      AedenPalette.red,
+    ).catchError((error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.toString())),
+        );
+      }
+    });
+  }
+
+  void _captureReturn(String orderId) {
+    final task = _tasks.firstWhere((entry) => entry.orderId == orderId);
+    _sendWriteback(
+      task,
+      'return_captured',
+      'Return captured while the parcel was still traceable.',
+      'Return captured',
+      AedenPalette.gold,
+    ).catchError((error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.toString())),
+        );
+      }
+    });
+  }
+
+  void _startRun() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Run started for the current route.')),
+    );
+  }
+
+  void _syncQueue() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Queue sync queued for the next network sync.')),
+    );
+  }
+
+  void _reviewNotes() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Review notes opened.')),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const _LoadingScreen(message: 'Signing into delivery...');
-    }
-
-    if (_error != null && _snapshot == null) {
-      return _ErrorState(
-        message: 'Could not load the live delivery manifest.',
-        details: _error!,
-        onRetry: _bootstrap,
+      return const Scaffold(
+        backgroundColor: AedenPalette.cream,
+        body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    final snapshot = _snapshot;
-    if (snapshot == null) {
-      return const _ErrorState(
-        message: 'Delivery data was empty.',
-        details: 'The API responded without route or order data.',
+    if (_error != null) {
+      return Scaffold(
+        backgroundColor: AedenPalette.cream,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              _error!,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
       );
     }
 
-    final queueCount = _queue.length;
-    final failedCount = _failed.length;
+    final pages = [
+      _OverviewSection(
+        tasks: _tasks,
+        readyCount: _readyCount,
+        routeCount: _routeCount,
+        exceptionCount: _exceptionCount,
+        onStartRun: _startRun,
+      ),
+      _RouteSection(
+        tasks: _tasks,
+        onPodComplete: _markPodComplete,
+        onMarkFailed: _markFailed,
+        onCaptureReturn: _captureReturn,
+      ),
+      _QueueSection(
+        tasks: _tasks,
+        readyCount: _readyCount,
+        routeCount: _routeCount,
+        exceptionCount: _exceptionCount,
+        onSyncQueue: _syncQueue,
+      ),
+      _HandoffSection(
+        tasks: _tasks,
+        readyCount: _readyCount,
+        exceptionCount: _exceptionCount,
+        onReviewNotes: _reviewNotes,
+        onPodComplete: _markPodComplete,
+        onMarkFailed: _markFailed,
+        onCaptureReturn: _captureReturn,
+      ),
+    ];
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Route manifest'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Chip(label: Text(queueCount > 0 ? '$queueCount queued' : 'Offline sync ready')),
+      backgroundColor: AedenPalette.cream,
+      body: SafeArea(child: pages[_tabIndex]),
+      bottomNavigationBar: NavigationBar(
+        backgroundColor: Colors.white,
+        selectedIndex: _tabIndex,
+        onDestinationSelected: (value) => setState(() => _tabIndex = value),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            label: 'Overview',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.alt_route_outlined),
+            label: 'Route',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.inbox_outlined),
+            label: 'Queue',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.handshake_outlined),
+            label: 'Handoff',
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async {
-          await _refreshSnapshot();
-        },
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _HeroCard(
-              title: 'The delivery app keeps the route honest.',
-              subtitle:
-                  'Drivers see stop order, proof-of-delivery, shortages, and return captures in one flow.',
-              statLabel: 'Stops',
-              statValue: '${snapshot.routes.length} today',
-              queueLabel: 'Queued',
-              queueValue: '$queueCount',
+    );
+  }
+}
+
+class _OverviewSection extends StatelessWidget {
+  const _OverviewSection({
+    required this.tasks,
+    required this.readyCount,
+    required this.routeCount,
+    required this.exceptionCount,
+    required this.onStartRun,
+  });
+
+  final List<_DeliveryTask> tasks;
+  final int readyCount;
+  final int routeCount;
+  final int exceptionCount;
+  final VoidCallback onStartRun;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFFF8FAFC), AedenPalette.cream],
+        ),
+      ),
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+        children: [
+          _HeaderCard(
+            title: 'Delivery Ops',
+            subtitle:
+                'Route status, queue pressure, exceptions, and handoff actions in one place.',
+            action: FilledButton(
+              onPressed: onStartRun,
+              child: const Text('Start run'),
             ),
-            const SizedBox(height: 12),
-            _ActionBanner(
-              text: failedCount > 0
-                  ? '$failedCount offline writes need review.'
-                  : 'Queued actions stay local until the API accepts them.',
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              _ActionBanner(text: _error!, tone: _BannerTone.bad),
+          ),
+          const SizedBox(height: 16),
+          _HeroCard(
+            tasks: tasks,
+            readyCount: readyCount,
+            routeCount: routeCount,
+            exceptionCount: exceptionCount,
+          ),
+          const SizedBox(height: 16),
+          GridView.count(
+            crossAxisCount: 2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            childAspectRatio: 1.35,
+            children: [
+              _MetricCard(
+                label: 'Stops',
+                value: '${tasks.length}',
+                tone: AedenPalette.goldBright,
+              ),
+              _MetricCard(
+                label: 'Ready',
+                value: '$readyCount',
+                tone: AedenPalette.green,
+              ),
+              _MetricCard(
+                label: 'On route',
+                value: '$routeCount',
+                tone: AedenPalette.gold,
+              ),
+              _MetricCard(
+                label: 'Exceptions',
+                value: '$exceptionCount',
+                tone: AedenPalette.red,
+              ),
             ],
-            const SizedBox(height: 16),
-            _SectionTitle(
-              title: 'Stops',
-              subtitle: 'Route order and current status.',
+          ),
+          const SizedBox(height: 16),
+          const _SectionTitle(
+            title: 'Queue preview',
+            subtitle: 'The next tap is ready to go for each stop.',
+          ),
+          const SizedBox(height: 12),
+          _QueuePreviewCard(tasks: tasks),
+        ],
+      ),
+    );
+  }
+}
+
+class _RouteSection extends StatelessWidget {
+  const _RouteSection({
+    required this.tasks,
+    required this.onPodComplete,
+    required this.onMarkFailed,
+    required this.onCaptureReturn,
+  });
+
+  final List<_DeliveryTask> tasks;
+  final ValueChanged<String> onPodComplete;
+  final ValueChanged<String> onMarkFailed;
+  final ValueChanged<String> onCaptureReturn;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        _HeaderCard(
+          title: 'Route Map',
+          subtitle: 'Quick route overview tuned for the driver lane.',
+          action: const _Pill(label: 'Live', tone: AedenPalette.green),
+        ),
+        const SizedBox(height: 14),
+        _MapCard(tasks: tasks),
+        const SizedBox(height: 16),
+        const _SectionTitle(
+          title: 'Stop actions',
+          subtitle:
+              'Tap through proof, failure, and return without leaving the route.',
+        ),
+        const SizedBox(height: 12),
+        ...tasks.map(
+          (task) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _StopCard(
+              task: task,
+              onPodComplete: () => onPodComplete(task.orderId),
+              onMarkFailed: () => onMarkFailed(task.orderId),
+              onCaptureReturn: () => onCaptureReturn(task.orderId),
             ),
-            const SizedBox(height: 12),
-            ...snapshot.routes.map(
-              (route) => Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _RouteCard(
-                  route: route,
-                  onPod: (order) => _markOrder(
-                    orderId: order.id,
-                    slotId: route.routeId,
-                    action: _DeliveryAction.podCompleted,
-                    note: 'POD captured from delivery app.',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _QueueSection extends StatelessWidget {
+  const _QueueSection({
+    required this.tasks,
+    required this.readyCount,
+    required this.routeCount,
+    required this.exceptionCount,
+    required this.onSyncQueue,
+  });
+
+  final List<_DeliveryTask> tasks;
+  final int readyCount;
+  final int routeCount;
+  final int exceptionCount;
+  final VoidCallback onSyncQueue;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        _HeaderCard(
+          title: 'Queue',
+          subtitle:
+              'Ready stops, in-flight deliveries, and exception items waiting for attention.',
+          action: FilledButton.tonal(
+            onPressed: onSyncQueue,
+            child: const Text('Sync queue'),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: AedenPalette.line),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x120F172A),
+                blurRadius: 32,
+                offset: Offset(0, 14),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Queue health',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Keep the queue short, keep proof current, and push exceptions immediately when they clear.',
+                style: TextStyle(color: AedenPalette.grey, height: 1.5),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: _MetricCard(
+                      label: 'Ready',
+                      value: '$readyCount',
+                      tone: AedenPalette.goldBright,
+                    ),
                   ),
-                  onFail: (order) => _markOrder(
-                    orderId: order.id,
-                    slotId: route.routeId,
-                    action: _DeliveryAction.deliveryFailed,
-                    note: 'Driver could not complete the drop.',
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _MetricCard(
+                      label: 'In flight',
+                      value: '$routeCount',
+                      tone: AedenPalette.gold,
+                    ),
                   ),
-                  onReturn: (order) => _markOrder(
-                    orderId: order.id,
-                    slotId: route.routeId,
-                    action: _DeliveryAction.returnCaptured,
-                    note: 'Return captured at doorstep.',
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _MetricCard(
+                      label: 'Issues',
+                      value: '$exceptionCount',
+                      tone: AedenPalette.red,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...tasks.map(
+          (task) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _QueueRow(task: task),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HandoffSection extends StatelessWidget {
+  const _HandoffSection({
+    required this.tasks,
+    required this.readyCount,
+    required this.exceptionCount,
+    required this.onReviewNotes,
+    required this.onPodComplete,
+    required this.onMarkFailed,
+    required this.onCaptureReturn,
+  });
+
+  final List<_DeliveryTask> tasks;
+  final int readyCount;
+  final int exceptionCount;
+  final VoidCallback onReviewNotes;
+  final ValueChanged<String> onPodComplete;
+  final ValueChanged<String> onMarkFailed;
+  final ValueChanged<String> onCaptureReturn;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        _HeaderCard(
+          title: 'Handoff',
+          subtitle:
+              'Proof, failure, and return actions for the driver at the door.',
+          action: FilledButton(
+            onPressed: onReviewNotes,
+            child: const Text('Review notes'),
+          ),
+        ),
+        const SizedBox(height: 14),
+        _ProfileCard(
+          title: 'Driver: Rahul',
+          subtitle: 'Shift 6:00 AM - 2:00 PM',
+          note:
+              'Vehicle KA-01-AB-1234 | Ready stops: $readyCount | Exceptions: $exceptionCount',
+        ),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: const [
+            _ActionGuideCard(
+              icon: Icons.verified_outlined,
+              title: 'POD complete',
+              body: 'Capture photo or signature before you close the stop.',
+            ),
+            _ActionGuideCard(
+              icon: Icons.report_outlined,
+              title: 'Mark failed',
+              body:
+                  'Use this when the customer is unavailable or the handoff cannot happen.',
+            ),
+            _ActionGuideCard(
+              icon: Icons.undo_rounded,
+              title: 'Capture return',
+              body: 'Record the return while the parcel is still traceable.',
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        const _SectionTitle(
+          title: 'Handoff checklist',
+          subtitle:
+              'The screen stays quick: one tap per action, one trace per stop.',
+        ),
+        const SizedBox(height: 12),
+        ...tasks.map(
+          (task) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _TaskChecklistCard(
+              task: task,
+              onPodComplete: () => onPodComplete(task.orderId),
+              onMarkFailed: () => onMarkFailed(task.orderId),
+              onCaptureReturn: () => onCaptureReturn(task.orderId),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HeaderCard extends StatelessWidget {
+  const _HeaderCard({
+    required this.title,
+    required this.subtitle,
+    required this.action,
+  });
+
+  final String title;
+  final String subtitle;
+  final Widget action;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [AedenPalette.espresso, AedenPalette.chestnut],
+        ),
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1F0F172A),
+            blurRadius: 30,
+            offset: Offset(0, 16),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            radius: 24,
+            backgroundColor: AedenPalette.goldBright,
+            child: Icon(Icons.local_shipping_outlined, color: Colors.white),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(color: Colors.white),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(color: Color(0xFFCBD5E1)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 140),
+            child: action,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HeroCard extends StatelessWidget {
+  const _HeroCard({
+    required this.tasks,
+    required this.readyCount,
+    required this.routeCount,
+    required this.exceptionCount,
+  });
+
+  final List<_DeliveryTask> tasks;
+  final int readyCount;
+  final int routeCount;
+  final int exceptionCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [AedenPalette.espresso, AedenPalette.chestnut],
+        ),
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Move every drop from dock to door with clarity.',
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(color: Colors.white),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Route, proof of delivery, and exceptions stay visible in one place.',
+            style: TextStyle(color: Color(0xFFCBD5E1), height: 1.5),
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _Pill(label: '${tasks.length} stops', tone: AedenPalette.goldBright),
+              _Pill(label: '$readyCount ready', tone: AedenPalette.green),
+              _Pill(label: '$routeCount in flight', tone: AedenPalette.gold),
+              _Pill(
+                label: '$exceptionCount exceptions',
+                tone: AedenPalette.red,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: tasks.isEmpty
+                  ? 0.0
+                  : (readyCount + routeCount) / tasks.length,
+              minHeight: 10,
+              backgroundColor: AedenPalette.goldSoft,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetricCard extends StatelessWidget {
+  const _MetricCard({
+    required this.label,
+    required this.value,
+    required this.tone,
+  });
+
+  final String label;
+  final String value;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AedenPalette.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: tone,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+            ),
+          ),
+          Text(value, style: Theme.of(context).textTheme.headlineSmall),
+        ],
+      ),
+    );
+  }
+}
+
+class _StopCard extends StatelessWidget {
+  const _StopCard({
+    required this.task,
+    required this.onPodComplete,
+    required this.onMarkFailed,
+    required this.onCaptureReturn,
+  });
+
+  final _DeliveryTask task;
+  final VoidCallback onPodComplete;
+  final VoidCallback onMarkFailed;
+  final VoidCallback onCaptureReturn;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AedenPalette.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: task.accent.withValues(alpha: 0.14),
+                child: Text(
+                  '${task.stopNumber}',
+                  style: TextStyle(
+                    color: task.accent,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            _SectionTitle(
-              title: 'Delivery exceptions',
-              subtitle: 'Failed drops and returns need immediate capture.',
-            ),
-            const SizedBox(height: 12),
-            _ActionCard(
-              title: 'Proof of delivery',
-              body: 'Capture photo or signature before closing a stop.',
-            ),
-            const SizedBox(height: 12),
-            _ActionCard(
-              title: 'Exception handling',
-              body: 'Record short delivery, failed delivery, or customer return on the spot.',
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: queueCount > 0 ? _syncQueue : null,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                child: Text(_syncing ? 'Syncing...' : 'Sync queued updates'),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      task.customer,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    Text(
+                      '${task.orderId} | ${task.address}',
+                      style: const TextStyle(color: AedenPalette.grey),
+                    ),
+                  ],
+                ),
               ),
+              _Pill(label: task.status, tone: task.accent),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            task.note,
+            style: const TextStyle(color: AedenPalette.grey, height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonal(
+                  onPressed: onPodComplete,
+                  child: const Text('POD'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onMarkFailed,
+                  child: const Text('Fail'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextButton(
+                  onPressed: onCaptureReturn,
+                  child: const Text('Return'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QueuePreviewCard extends StatelessWidget {
+  const _QueuePreviewCard({required this.tasks});
+
+  final List<_DeliveryTask> tasks;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AedenPalette.line),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x100F172A),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        children: tasks
+            .map(
+              (task) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _QueueRow(task: task),
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+  }
+}
+
+class _QueueRow extends StatelessWidget {
+  const _QueueRow({required this.task});
+
+  final _DeliveryTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: task.status == 'Exception'
+            ? AedenPalette.redSoft
+            : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AedenPalette.line),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: task.accent.withValues(alpha: 0.16),
+            child: Text(
+              '${task.stopNumber}',
+              style: TextStyle(color: task.accent, fontWeight: FontWeight.w900),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  task.customer,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                Text(
+                  task.orderId,
+                  style: const TextStyle(color: AedenPalette.grey),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                task.status,
+                style: TextStyle(
+                  color: task.accent,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              Text(
+                task.slot,
+                style: const TextStyle(color: AedenPalette.muted, fontSize: 12),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapCard extends StatelessWidget {
+  const _MapCard({required this.tasks});
+
+  final List<_DeliveryTask> tasks;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF0F1F49), Color(0xFF102A5C)],
+        ),
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Route board',
+            style: TextStyle(
+              color: Color(0xFFCBD5E1),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 14),
+          ...tasks.map(
+            (task) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _RouteRow(task: task),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RouteRow extends StatelessWidget {
+  const _RouteRow({required this.task});
+
+  final _DeliveryTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 18,
+            backgroundColor: task.accent,
+            child: Text(
+              '${task.stopNumber}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              '${task.customer} | ${task.address}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Text(task.slot, style: const TextStyle(color: Color(0xFFCBD5E1))),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionGuideCard extends StatelessWidget {
+  const _ActionGuideCard({
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+
+  final IconData icon;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 160,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: AedenPalette.line),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: AedenPalette.goldSoft,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, color: AedenPalette.gold),
+            ),
+            const SizedBox(height: 12),
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              body,
+              style: const TextStyle(color: AedenPalette.grey, height: 1.35),
             ),
           ],
         ),
@@ -344,256 +1234,24 @@ class _DeliveryHomeState extends State<DeliveryHome> {
   }
 }
 
-class _DeliverySnapshot {
-  const _DeliverySnapshot({required this.routes});
+class _Pill extends StatelessWidget {
+  const _Pill({required this.label, required this.tone});
 
-  final List<_DeliveryRoute> routes;
-
-  factory _DeliverySnapshot.fromJson(
-    Map<String, dynamic> manifestJson, {
-    required Map<String, dynamic> ordersJson,
-    required Map<String, dynamic> customersJson,
-  }) {
-    final customerById = {
-      for (final entry in (customersJson['customers'] as List<dynamic>? ?? const []))
-        (entry as Map<String, dynamic>)['id'] as String? ?? '': _Customer.fromJson(entry as Map<String, dynamic>),
-    };
-
-    final orderGroups = <String, List<_OrderSummary>>{};
-    for (final orderEntry in (ordersJson['orders'] as List<dynamic>? ?? const [])) {
-      final orderJson = orderEntry as Map<String, dynamic>;
-      final order = _OrderSummary.fromJson(orderJson, customerById: customerById);
-      orderGroups.putIfAbsent(order.slotId, () => []).add(order);
-    }
-    for (final orders in orderGroups.values) {
-      orders.sort((left, right) => left.id.compareTo(right.id));
-    }
-
-    final routes = (manifestJson['routes'] as List<dynamic>? ?? const [])
-        .map((entry) => _DeliveryRoute.fromJson(entry as Map<String, dynamic>, orders: orderGroups))
-        .toList(growable: false);
-
-    return _DeliverySnapshot(routes: routes);
-  }
-}
-
-class _DeliveryRoute {
-  const _DeliveryRoute({
-    required this.routeId,
-    required this.label,
-    required this.zone,
-    required this.orderCount,
-    required this.orders,
-    required this.completedOrders,
-    required this.failedOrders,
-  });
-
-  final String routeId;
   final String label;
-  final String zone;
-  final int orderCount;
-  final List<_OrderSummary> orders;
-  final int completedOrders;
-  final int failedOrders;
-
-  factory _DeliveryRoute.fromJson(
-    Map<String, dynamic> json, {
-    required Map<String, List<_OrderSummary>> orders,
-  }) {
-    final slotId = json['slotId'] as String? ?? '';
-    final routeOrders = [...(orders[slotId] ?? const [])]
-      ..sort((left, right) => left.id.compareTo(right.id));
-    final List<_OrderSummary> numberedOrders = routeOrders
-        .asMap()
-        .entries
-        .map<_OrderSummary>((entry) => entry.value.copyWith(sequence: entry.key + 1))
-        .toList(growable: false);
-    return _DeliveryRoute(
-      routeId: slotId,
-      label: json['label'] as String? ?? '',
-      zone: json['zone'] as String? ?? '',
-      orderCount: (json['orderCount'] as num?)?.toInt() ?? 0,
-      completedOrders: (json['completedOrders'] as num?)?.toInt() ?? 0,
-      failedOrders: (json['failedOrders'] as num?)?.toInt() ?? 0,
-      orders: numberedOrders,
-    );
-  }
-}
-
-class _OrderSummary {
-  const _OrderSummary({
-    required this.id,
-    required this.customerName,
-    required this.slotId,
-    required this.status,
-    required this.amountTotal,
-    required this.sequence,
-  });
-
-  final String id;
-  final String customerName;
-  final String slotId;
-  final String status;
-  final int amountTotal;
-  final int sequence;
-
-  factory _OrderSummary.fromJson(
-    Map<String, dynamic> json, {
-    required Map<String, _Customer> customerById,
-  }) {
-    final customerId = json['customerId'] as String? ?? '';
-    return _OrderSummary(
-      id: json['id'] as String? ?? 'unknown',
-      customerName: customerById[customerId]?.name ?? customerId,
-      slotId: json['slotId'] as String? ?? '',
-      status: json['status'] as String? ?? 'pending',
-      amountTotal: (json['amountTotal'] as num?)?.toInt() ?? 0,
-      sequence: (json['sequence'] as num?)?.toInt() ?? 0,
-    );
-  }
-
-  _OrderSummary copyWith({int? sequence}) {
-    return _OrderSummary(
-      id: id,
-      customerName: customerName,
-      slotId: slotId,
-      status: status,
-      amountTotal: amountTotal,
-      sequence: sequence ?? this.sequence,
-    );
-  }
-}
-
-class _Customer {
-  const _Customer({required this.name});
-
-  final String name;
-
-  factory _Customer.fromJson(Map<String, dynamic> json) {
-    return _Customer(name: json['name'] as String? ?? 'Unknown customer');
-  }
-}
-
-enum _DeliveryAction { podCompleted, deliveryFailed, returnCaptured }
-
-class _QueuedDeliveryEvent {
-  const _QueuedDeliveryEvent({
-    required this.eventId,
-    required this.orderId,
-    required this.slotId,
-    required this.action,
-    required this.note,
-    required this.capturedAt,
-  });
-
-  final String eventId;
-  final String orderId;
-  final String slotId;
-  final _DeliveryAction action;
-  final String note;
-  final String capturedAt;
-
-  Map<String, dynamic> toJson() {
-    return {
-      'eventId': eventId,
-      'orderId': orderId,
-      'slotId': slotId,
-      'action': switch (action) {
-        _DeliveryAction.podCompleted => 'pod_completed',
-        _DeliveryAction.deliveryFailed => 'delivery_failed',
-        _DeliveryAction.returnCaptured => 'return_captured',
-      },
-      'note': note,
-      'capturedAt': capturedAt,
-    };
-  }
-
-  factory _QueuedDeliveryEvent.fromJson(Map<String, dynamic> json) {
-    return _QueuedDeliveryEvent(
-      eventId: json['eventId'] as String? ?? '',
-      orderId: json['orderId'] as String? ?? '',
-      slotId: json['slotId'] as String? ?? '',
-      action: switch (json['action'] as String? ?? '') {
-        'pod_completed' => _DeliveryAction.podCompleted,
-        'delivery_failed' => _DeliveryAction.deliveryFailed,
-        _ => _DeliveryAction.returnCaptured,
-      },
-      note: json['note'] as String? ?? '',
-      capturedAt: json['capturedAt'] as String? ?? '',
-    );
-  }
-}
-
-class _HeroCard extends StatelessWidget {
-  const _HeroCard({
-    required this.title,
-    required this.subtitle,
-    required this.statLabel,
-    required this.statValue,
-    required this.queueLabel,
-    required this.queueValue,
-  });
-
-  final String title;
-  final String subtitle;
-  final String statLabel;
-  final String statValue;
-  final String queueLabel;
-  final String queueValue;
+  final Color tone;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFFFE8D5), Color(0xFFFFFAF4)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(28),
+        color: tone.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: tone.withValues(alpha: 0.2)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 10),
-          Text(subtitle),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(child: _MetricPill(label: statLabel, value: statValue)),
-              const SizedBox(width: 12),
-              Expanded(child: _MetricPill(label: queueLabel, value: queueValue)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MetricPill extends StatelessWidget {
-  const _MetricPill({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.78),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: Theme.of(context).textTheme.labelMedium),
-          const SizedBox(height: 4),
-          Text(value, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
-        ],
+      child: Text(
+        label,
+        style: TextStyle(color: tone, fontWeight: FontWeight.w800),
       ),
     );
   }
@@ -610,229 +1268,178 @@ class _SectionTitle extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 2),
-        Text(subtitle),
+        Text(title, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 4),
+        Text(subtitle, style: const TextStyle(color: AedenPalette.grey)),
       ],
     );
   }
 }
 
-class _RouteCard extends StatelessWidget {
-  const _RouteCard({
-    required this.route,
-    required this.onPod,
-    required this.onFail,
-  required this.onReturn,
+class _ProfileCard extends StatelessWidget {
+  const _ProfileCard({
+    required this.title,
+    required this.subtitle,
+    required this.note,
   });
 
-  final _DeliveryRoute route;
-  final void Function(_OrderSummary order) onPod;
-  final void Function(_OrderSummary order) onFail;
-  final void Function(_OrderSummary order) onReturn;
-
-  @override
-  Widget build(BuildContext context) {
-    final badgeColor = route.orderCount >= 14
-        ? Colors.red.shade100
-        : route.orderCount >= 10
-            ? Colors.amber.shade100
-            : Colors.green.shade100;
-
-    return Card(
-      elevation: 0,
-      color: Colors.white.withValues(alpha: 0.9),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(route.label, style: Theme.of(context).textTheme.titleMedium),
-                    Text('${route.zone} zone', style: Theme.of(context).textTheme.bodySmall),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: badgeColor,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text('${route.orderCount} stops', style: const TextStyle(fontWeight: FontWeight.w700)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (route.orders.isEmpty)
-              Text(
-                'No orders mapped to this route yet.',
-                style: Theme.of(context).textTheme.bodyMedium,
-              )
-            else
-              ...route.orders.map(
-                (order) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(order.id, style: Theme.of(context).textTheme.titleMedium),
-                            Text(order.status, style: const TextStyle(fontWeight: FontWeight.w700)),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Text('${order.customerName} | Rs. ${order.amountTotal}'),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () => onPod(order),
-                              child: const Text('POD complete'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () => onFail(order),
-                              child: const Text('Mark failed'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () => onReturn(order),
-                              child: const Text('Capture return'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ActionCard extends StatelessWidget {
-  const _ActionCard({required this.title, required this.body});
-
   final String title;
-  final String body;
+  final String subtitle;
+  final String note;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.82),
-        borderRadius: BorderRadius.circular(20),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AedenPalette.line),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 4),
-          Text(body),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          Text(subtitle, style: const TextStyle(color: AedenPalette.grey)),
+          const SizedBox(height: 6),
+          Text(
+            note,
+            style: const TextStyle(color: AedenPalette.grey, height: 1.35),
+          ),
         ],
       ),
     );
   }
 }
 
-enum _BannerTone { normal, bad }
+class _TaskChecklistCard extends StatelessWidget {
+  const _TaskChecklistCard({
+    required this.task,
+    required this.onPodComplete,
+    required this.onMarkFailed,
+    required this.onCaptureReturn,
+  });
 
-class _ActionBanner extends StatelessWidget {
-  const _ActionBanner({required this.text, this.tone = _BannerTone.normal});
-
-  final String text;
-  final _BannerTone tone;
+  final _DeliveryTask task;
+  final VoidCallback onPodComplete;
+  final VoidCallback onMarkFailed;
+  final VoidCallback onCaptureReturn;
 
   @override
   Widget build(BuildContext context) {
-    final colors = tone == _BannerTone.bad
-        ? (Colors.red.shade50, Colors.red.shade900)
-        : (Colors.grey.shade50, Colors.grey.shade800);
-
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: colors.$1,
-        borderRadius: BorderRadius.circular(16),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AedenPalette.line),
       ),
-      child: Text(text, style: TextStyle(color: colors.$2)),
-    );
-  }
-}
-
-class _ErrorState extends StatelessWidget {
-  const _ErrorState({required this.message, required this.details, this.onRetry});
-
-  final String message;
-  final String details;
-  final Future<void> Function()? onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  message,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: task.accent.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                const SizedBox(height: 8),
-                Text(details),
-                const SizedBox(height: 16),
-                if (onRetry != null)
-                  FilledButton(
-                    onPressed: () {
-                      onRetry!();
-                    },
-                    child: const Text('Retry'),
+                child: Center(
+                  child: Text(
+                    '${task.stopNumber}',
+                    style: TextStyle(
+                      color: task.accent,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
-              ],
-            ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      task.customer,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${task.orderId} | ${task.slot}',
+                      style: const TextStyle(color: AedenPalette.grey),
+                    ),
+                  ],
+                ),
+              ),
+              _Pill(label: task.status, tone: task.accent),
+            ],
           ),
-        ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonal(
+                onPressed: onPodComplete,
+                child: const Text('POD complete'),
+              ),
+              OutlinedButton(
+                onPressed: onMarkFailed,
+                child: const Text('Mark failed'),
+              ),
+              TextButton(onPressed: onCaptureReturn, child: const Text('Capture return')),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _LoadingScreen extends StatelessWidget {
-  const _LoadingScreen({required this.message});
+class _DeliveryTask {
+  const _DeliveryTask({
+    required this.stopNumber,
+    required this.slotId,
+    required this.orderId,
+    required this.customer,
+    required this.address,
+    required this.slot,
+    required this.status,
+    required this.accent,
+    required this.note,
+  });
 
-  final String message;
+  final int stopNumber;
+  final String slotId;
+  final String orderId;
+  final String customer;
+  final String address;
+  final String slot;
+  final String status;
+  final Color accent;
+  final String note;
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(child: Text(message)),
+  _DeliveryTask copyWith({
+    String? status,
+    Color? accent,
+  }) {
+    return _DeliveryTask(
+      stopNumber: stopNumber,
+      slotId: slotId,
+      orderId: orderId,
+      customer: customer,
+      address: address,
+      slot: slot,
+      status: status ?? this.status,
+      accent: accent ?? this.accent,
+      note: note,
     );
   }
 }

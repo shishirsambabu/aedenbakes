@@ -10,4 +10,5 @@ build/
 **/.turbo/
 *.tsbuildinfo
 *.log
-
+**/*.sqlite
+**/*.db

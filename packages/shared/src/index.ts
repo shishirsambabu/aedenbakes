@@ -32,6 +32,31 @@ export interface CustomerAccount {
   deliveryZone: string;
 }
 
+export interface CustomerBranch {
+  id: string;
+  customerId: string;
+  name: string;
+  code: string;
+  status: 'active' | 'paused' | 'service_hold' | 'closed';
+  serviceZone: string;
+  deliveryNotes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomerUserMembership {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  displayName: string;
+  role: 'admin' | 'buyer' | 'manager' | 'viewer';
+  status: 'invited' | 'active' | 'revoked';
+  phone?: string;
+  email?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -70,6 +95,7 @@ export interface OrderItem {
 export interface Order {
   id: string;
   customerId: string;
+  branchId?: string | null;
   serviceDate: string;
   slotId: string;
   paymentMode: PaymentMode;
@@ -186,6 +212,8 @@ export interface CustomerServiceabilitySummary {
 export interface CustomerDashboardResponse {
   customer: CustomerAccount;
   auth: CustomerPortalAuthRecord;
+  branches: CustomerBranch[];
+  users: CustomerUserMembership[];
   orders: Order[];
   catalog: {
     products: Product[];
@@ -266,6 +294,7 @@ export interface StandingOrderSchedule {
 export interface StandingOrder {
   id: string;
   customerId: string;
+  branchId?: string | null;
   status: 'draft' | 'active' | 'paused' | 'cancelled';
   schedule: StandingOrderSchedule;
   createdAt: string;
@@ -294,6 +323,8 @@ export interface StandingOrderPause {
 export interface Customer360Response {
   customer: CustomerAccount;
   auth: CustomerPortalAuthRecord | null;
+  branches: CustomerBranch[];
+  users: CustomerUserMembership[];
   notes: CustomerNote[];
   timeline: CustomerTimelineEvent[];
   supportCases: SupportCase[];
@@ -320,6 +351,7 @@ export interface CustomerOrderLineInput {
 export interface CustomerOrderCreateRequest {
   serviceDate?: string;
   slotId: string;
+  branchId?: string | null;
   paymentMode?: PaymentMode;
   notes?: string;
   items: CustomerOrderLineInput[];

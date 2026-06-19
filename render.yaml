@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: aeden-bakes-api
+    runtime: node
+    rootDir: services/api
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    branch: main

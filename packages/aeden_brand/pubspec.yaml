@@ -1,0 +1,14 @@
+name: aeden_brand
+description: Shared Aeden Bakes brand tokens and theme helpers.
+publish_to: 'none'
+
+version: 0.1.0
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_fonts: ^6.2.1
+

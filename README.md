@@ -7,14 +7,26 @@ Bakery operations platform in progress.
 - Root prototype: concept/demo UI that is still preserved as reference material
 - Phase 1 workspace: defined in [WORKSPACE_PLAN.md](/D:/Aeden%20Bakes/WORKSPACE_PLAN.md)
 - Phase 1 execution note: [PHASE1_EXECUTION.md](/D:/Aeden%20Bakes/PHASE1_EXECUTION.md)
+- Agent roster: [docs/AGENT_ROSTER.md](/D:/Aeden%20Bakes/docs/AGENT_ROSTER.md)
+- Phase gate routine: [docs/PHASE_GATE_ROUTINE.md](/D:/Aeden%20Bakes/docs/PHASE_GATE_ROUTINE.md)
 - Product blueprint: [docs/phase-1-product-blueprint.md](/D:/Aeden%20Bakes/docs/phase-1-product-blueprint.md)
 - Phase 2 blueprint: [docs/phase-2-product-blueprint.md](/D:/Aeden%20Bakes/docs/phase-2-product-blueprint.md)
 - Phase 3 blueprint: [docs/phase-3-product-blueprint.md](/D:/Aeden%20Bakes/docs/phase-3-product-blueprint.md)
+- Phase 3 finalization: [docs/phase-3-finalization.md](/D:/Aeden%20Bakes/docs/phase-3-finalization.md)
+- Phase 4 blueprint: [docs/phase-4-product-blueprint.md](/D:/Aeden%20Bakes/docs/phase-4-product-blueprint.md)
+- Phase 4 finalization: [docs/phase-4-finalization.md](/D:/Aeden%20Bakes/docs/phase-4-finalization.md)
+- Phase 5 blueprint: [docs/phase-5-product-blueprint.md](/D:/Aeden%20Bakes/docs/phase-5-product-blueprint.md)
+- Phase 5 finalization: [docs/phase-5-finalization.md](/D:/Aeden%20Bakes/docs/phase-5-finalization.md)
+- Phase 5 deployment stack: [docs/phase-5-deployment-stack.md](/D:/Aeden%20Bakes/docs/phase-5-deployment-stack.md)
+- Phase 5 deployment checklist: [docs/phase-5-deployment-checklist.md](/D:/Aeden%20Bakes/docs/phase-5-deployment-checklist.md)
+- Master product blueprint: [docs/master-product-blueprint.md](/D:/Aeden%20Bakes/docs/master-product-blueprint.md)
+- Phase 6 blueprint: [docs/phase-6-product-blueprint.md](/D:/Aeden%20Bakes/docs/phase-6-product-blueprint.md)
 - Risk register: [docs/phase-1-risk-register.md](/D:/Aeden%20Bakes/docs/phase-1-risk-register.md)
 - Flutter mobile shells: `apps/mobile/customer`, `apps/mobile/production`, `apps/mobile/delivery`
 - Web super-admin shell: `apps/web/super-admin`
 - API skeleton: `services/api`
 - Shared domain package: `packages/shared`
+- Release check script: `scripts/batch-5-1-release-check.ps1`
 
 ## Planned surfaces
 

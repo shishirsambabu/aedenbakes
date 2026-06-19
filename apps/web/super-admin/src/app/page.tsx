@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-const API_BASE_URL = 'http://127.0.0.1:4000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:4000';
+const SHOW_DEMO_ACCESS = process.env.NODE_ENV !== 'production';
 
 type PortalRole = 'owner' | 'manager' | 'production' | 'delivery' | 'accounts' | 'support';
 
@@ -33,6 +34,31 @@ type CustomerAccount = {
   outstandingBalance: number;
   riskState: 'healthy' | 'watch' | 'block_soon' | 'blocked';
   deliveryZone: string;
+};
+
+type CustomerBranch = {
+  id: string;
+  customerId: string;
+  name: string;
+  code: string;
+  status: 'active' | 'paused' | 'service_hold' | 'closed';
+  serviceZone: string;
+  deliveryNotes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CustomerUserMembership = {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  displayName: string;
+  role: 'admin' | 'buyer' | 'manager' | 'viewer';
+  status: 'invited' | 'active' | 'revoked';
+  phone?: string;
+  email?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type Product = {
@@ -67,6 +93,7 @@ type DeliverySlot = {
 type Order = {
   id: string;
   customerId: string;
+  branchId?: string | null;
   serviceDate: string;
   slotId: string;
   paymentMode: 'prepaid' | 'part-pay' | 'credit';
@@ -185,6 +212,8 @@ type Customer360Response = {
     deliveryZone?: string;
     phone?: string;
   } | null;
+  branches: CustomerBranch[];
+  users: CustomerUserMembership[];
   notes: CustomerNote[];
   timeline: CustomerTimelineEvent[];
   supportCases: SupportCase[];
@@ -283,6 +312,107 @@ type VasyErpContractPreview = {
   }>;
 };
 
+type NotificationJob = {
+  id: string;
+  channel: 'sms' | 'whatsapp' | 'email' | 'in_app';
+  templateCode: string;
+  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'retrying';
+  correlationKey: string;
+  recipient: string;
+  subject: string;
+  createdAt: string;
+  sentAt: string | null;
+};
+
+type NotificationDelivery = {
+  id: string;
+  jobId: string;
+  recipient: string;
+  providerMessageId: string | null;
+  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'retrying';
+  attemptNo: number;
+  createdAt: string;
+};
+
+type AccountHealthSnapshot = {
+  id: string;
+  customerId: string;
+  healthState: 'healthy' | 'watch' | 'block_soon' | 'blocked';
+  riskScore: number;
+  exposure: number;
+  reasonJson: string[];
+  createdAt: string;
+};
+
+type AccountAction = {
+  id: string;
+  customerId: string;
+  actionType: string;
+  reason: string;
+  createdBy: string;
+  approvedBy: string | null;
+  createdAt: string;
+};
+
+type AlertRule = {
+  id: string;
+  ruleCode: string;
+  thresholdJson: Record<string, unknown>;
+  active: boolean;
+  createdAt: string;
+};
+
+type AlertEvent = {
+  id: string;
+  ruleId: string;
+  severity: 'info' | 'warn' | 'critical';
+  payloadJson: Record<string, unknown>;
+  createdAt: string;
+  acknowledgedAt: string | null;
+};
+
+type AnalyticsSnapshot = {
+  id: string;
+  snapshotTime: string;
+  payloadJson: Record<string, unknown>;
+  createdAt: string;
+};
+
+type KpiRollup = {
+  id: string;
+  metricCode: string;
+  serviceDate: string;
+  value: number;
+  createdAt: string;
+};
+
+type CustomerRequest = {
+  id: string;
+  customerId: string;
+  requestType: 'address_change' | 'reorder' | 'support_follow_up' | 'delivery_note';
+  status: 'draft' | 'submitted' | 'in_review' | 'completed' | 'rejected';
+  reason: string;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
+type SavedAddress = {
+  id: string;
+  customerId: string;
+  label: string;
+  addressLine: string;
+  deliveryZone: string;
+  active: boolean;
+};
+
+type ReportExport = {
+  id: string;
+  reportCode: string;
+  createdBy: string;
+  createdAt: string;
+  payloadJson: Record<string, unknown>;
+};
+
 type AppState = {
   customers: CustomerAccount[];
   products: Product[];
@@ -297,6 +427,24 @@ type AppState = {
   standingOrderRuns: StandingOrderRun[];
   standingOrderPauses: StandingOrderPause[];
   erpContractPreview: VasyErpContractPreview | null;
+  notifications: {
+    jobs: NotificationJob[];
+    deliveries: NotificationDelivery[];
+  };
+  accountHealth: {
+    snapshots: AccountHealthSnapshot[];
+    actions: AccountAction[];
+  };
+  analytics: {
+    latest: AnalyticsSnapshot | null;
+    snapshots: AnalyticsSnapshot[];
+    rollups: KpiRollup[];
+  };
+  customerRequests: CustomerRequest[];
+  savedAddresses: SavedAddress[];
+  alertRules: AlertRule[];
+  alertEvents: AlertEvent[];
+  reportExports: ReportExport[];
 };
 
 const initialAppState: AppState = {
@@ -313,13 +461,21 @@ const initialAppState: AppState = {
   standingOrderRuns: [],
   standingOrderPauses: [],
   erpContractPreview: null,
+  notifications: { jobs: [], deliveries: [] },
+  accountHealth: { snapshots: [], actions: [] },
+  analytics: { latest: null, snapshots: [], rollups: [] },
+  customerRequests: [],
+  savedAddresses: [],
+  alertRules: [],
+  alertEvents: [],
+  reportExports: [],
 };
 
 export default function Home() {
   const [token, setToken] = useState<string | null>(null);
   const [session, setSession] = useState<SessionPayload | null>(null);
-  const [loginUsername, setLoginUsername] = useState('owner');
-  const [loginPassword, setLoginPassword] = useState('owner123');
+  const [loginUsername, setLoginUsername] = useState(SHOW_DEMO_ACCESS ? 'owner' : '');
+  const [loginPassword, setLoginPassword] = useState(SHOW_DEMO_ACCESS ? 'owner123' : '');
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppState>(initialAppState);
@@ -334,125 +490,363 @@ export default function Home() {
   const [standingOrderNotesDraft, setStandingOrderNotesDraft] = useState('Weekday breakfast repeat.');
   const [standingOrderRunDate, setStandingOrderRunDate] = useState(new Date().toISOString().slice(0, 10));
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
+  const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const savedToken = window.localStorage.getItem('aeden-bakes-session-token');
-    if (!savedToken) {
-      setLoadingAuth(false);
-      return;
-    }
-
-    setToken(savedToken);
-    void bootstrapSession(savedToken).finally(() => setLoadingAuth(false));
+  const clearSession = useCallback(() => {
+    window.sessionStorage.removeItem('aeden-bakes-session-token');
+    setToken(null);
+    setSession(null);
+    setSelectedCustomer(null);
   }, []);
 
-  const permissions = session?.permissions ?? { canEditOrders: false, canCaptureReturns: false, canSyncErp: false };
+  const refreshAppState = useCallback(
+    async (
+      sessionToken = token,
+      canSyncErp = session?.permissions.canSyncErp ?? false,
+      role = session?.user.role ?? null,
+    ) => {
+      if (!sessionToken) {
+        setAppState(initialAppState);
+        return;
+      }
+
+      const canViewOps = role ? ['owner', 'manager', 'accounts', 'support'].includes(role) : false;
+      const canViewStanding = role ? ['owner', 'manager', 'accounts', 'production', 'support'].includes(role) : false;
+      const canViewCommercial = role ? ['owner', 'manager', 'accounts', 'support'].includes(role) : false;
+      const [
+        customersRes,
+        catalogRes,
+        ordersRes,
+        operationsRes,
+        supportRes,
+        standingRes,
+        notificationsRes,
+        accountHealthRes,
+        analyticsRes,
+        customerRequestsRes,
+        savedAddressesRes,
+        alertRulesRes,
+        reportsRes,
+      ] = await Promise.all([
+        sessionToken
+          ? fetchWithTimeout(`${API_BASE_URL}/customers`, { headers: authHeaders(sessionToken) })
+          : Promise.resolve(null),
+        sessionToken
+          ? fetchWithTimeout(`${API_BASE_URL}/catalog`, { headers: authHeaders(sessionToken) })
+          : Promise.resolve(null),
+        sessionToken
+          ? fetchWithTimeout(`${API_BASE_URL}/orders`, { headers: authHeaders(sessionToken) })
+          : Promise.resolve(null),
+        sessionToken && canViewOps ? fetchWithTimeout(`${API_BASE_URL}/admin/operations`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewOps ? fetchWithTimeout(`${API_BASE_URL}/support/cases`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewStanding ? fetchWithTimeout(`${API_BASE_URL}/standing-orders`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/notifications`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/account-health`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/analytics/overview`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken ? fetchWithTimeout(`${API_BASE_URL}/customer/requests`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken ? fetchWithTimeout(`${API_BASE_URL}/customer/addresses`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/alert-rules`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/reports`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+      ]);
+
+      if (!customersRes || !catalogRes || !ordersRes || !customersRes.ok || !catalogRes.ok || !ordersRes.ok) {
+        throw new Error('Could not refresh live data.');
+      }
+
+      const [customersJson, catalogJson, ordersJson] = await Promise.all([
+        customersRes.json(),
+        catalogRes.json(),
+        ordersRes.json(),
+      ]);
+
+      let auditEvents: AuditEvent[] = [];
+      let approvals: ApprovalRequest[] = [];
+      let supportCases: SupportCase[] = [];
+      let standingOrders: StandingOrder[] = [];
+      let standingOrderRuns: StandingOrderRun[] = [];
+      let standingOrderPauses: StandingOrderPause[] = [];
+      let erpSyncStatus: ErpSyncStatus | null = null;
+      let erpContractPreview: VasyErpContractPreview | null = null;
+      let notifications: AppState['notifications'] = { jobs: [], deliveries: [] };
+      let accountHealth: AppState['accountHealth'] = { snapshots: [], actions: [] };
+      let analytics: AppState['analytics'] = { latest: null, snapshots: [], rollups: [] };
+      let customerRequests: CustomerRequest[] = [];
+      let savedAddresses: SavedAddress[] = [];
+      let alertRules: AlertRule[] = [];
+      let alertEvents: AlertEvent[] = [];
+      let reportExports: ReportExport[] = [];
+
+      if (operationsRes) {
+        if (!operationsRes.ok) {
+          throw new Error('Could not refresh operations feed.');
+        }
+        const operationsJson = await operationsRes.json();
+        auditEvents = operationsJson.auditEvents ?? [];
+        approvals = operationsJson.approvals ?? [];
+        erpSyncStatus = operationsJson.erpSyncStatus ?? null;
+      }
+
+      if (supportRes) {
+        if (!supportRes.ok) {
+          throw new Error('Could not refresh support inbox.');
+        }
+        const supportJson = await supportRes.json();
+        supportCases = supportJson.supportCases ?? [];
+      }
+
+      if (standingRes) {
+        if (!standingRes.ok) {
+          throw new Error('Could not refresh recurring orders.');
+        }
+        const standingJson = await standingRes.json();
+        standingOrders = standingJson.standingOrders ?? [];
+        standingOrderRuns = standingJson.standingOrderRuns ?? [];
+        standingOrderPauses = standingJson.standingOrderPauses ?? [];
+      }
+
+      if (notificationsRes) {
+        if (!notificationsRes.ok) {
+          throw new Error('Could not refresh notifications.');
+        }
+        const notificationsJson = await notificationsRes.json();
+        notifications = {
+          jobs: notificationsJson.jobs ?? [],
+          deliveries: notificationsJson.deliveries ?? [],
+        };
+      }
+
+      if (accountHealthRes) {
+        if (!accountHealthRes.ok) {
+          throw new Error('Could not refresh account health.');
+        }
+        const accountHealthJson = await accountHealthRes.json();
+        accountHealth = {
+          snapshots: accountHealthJson.snapshots ?? [],
+          actions: accountHealthJson.actions ?? [],
+        };
+      }
+
+      if (analyticsRes) {
+        if (!analyticsRes.ok) {
+          throw new Error('Could not refresh analytics.');
+        }
+        const analyticsJson = await analyticsRes.json();
+        analytics = {
+          latest: analyticsJson.latest ?? null,
+          snapshots: analyticsJson.snapshots ?? [],
+          rollups: analyticsJson.rollups ?? [],
+        };
+      }
+
+      if (customerRequestsRes) {
+        if (!customerRequestsRes.ok) {
+          throw new Error('Could not refresh customer requests.');
+        }
+        const customerRequestsJson = await customerRequestsRes.json();
+        customerRequests = customerRequestsJson.requests ?? [];
+      }
+
+      if (savedAddressesRes) {
+        if (!savedAddressesRes.ok) {
+          throw new Error('Could not refresh saved addresses.');
+        }
+        const savedAddressesJson = await savedAddressesRes.json();
+        savedAddresses = savedAddressesJson.addresses ?? [];
+      }
+
+      if (alertRulesRes) {
+        if (!alertRulesRes.ok) {
+          throw new Error('Could not refresh alert rules.');
+        }
+        const alertRulesJson = await alertRulesRes.json();
+        alertRules = alertRulesJson.alertRules ?? [];
+        alertEvents = alertRulesJson.alertEvents ?? [];
+      }
+
+      if (reportsRes) {
+        if (!reportsRes.ok) {
+          throw new Error('Could not refresh report exports.');
+        }
+        const reportsJson = await reportsRes.json();
+        reportExports = reportsJson.reportExports ?? [];
+      }
+
+      if (sessionToken && canSyncErp) {
+        const contractResponse = await fetchWithTimeout(`${API_BASE_URL}/erp/vasy/contract`, {
+          headers: authHeaders(sessionToken),
+        });
+        if (contractResponse.ok) {
+          erpContractPreview = (await contractResponse.json()) as VasyErpContractPreview;
+        }
+      }
+
+      setAppState({
+        customers: customersJson.customers ?? [],
+        products: catalogJson.products ?? [],
+        capacities: catalogJson.capacities ?? [],
+        slots: catalogJson.slots ?? [],
+        orders: ordersJson.orders ?? [],
+        auditEvents,
+        erpSyncStatus,
+        approvals,
+        supportCases,
+        standingOrders,
+        standingOrderRuns,
+        standingOrderPauses,
+        erpContractPreview,
+        notifications,
+        accountHealth,
+        analytics,
+        customerRequests,
+        savedAddresses,
+        alertRules,
+        alertEvents,
+        reportExports,
+      });
+    },
+    [session?.permissions.canSyncErp, session?.user.role, token],
+  );
+
+  useEffect(() => {
+    const savedToken = window.sessionStorage.getItem('aeden-bakes-session-token');
+    const timer = window.setTimeout(() => {
+      if (!savedToken) {
+        setLoadingAuth(false);
+        return;
+      }
+
+      setToken(savedToken);
+      void (async () => {
+        const response = await fetchWithTimeout(`${API_BASE_URL}/auth/me`, {
+          headers: authHeaders(savedToken),
+        });
+
+        if (!response.ok) {
+          throw new Error('Session expired');
+        }
+
+        const payload = (await response.json()) as SessionPayload;
+        setSession(payload);
+        await refreshAppState(savedToken, payload.permissions.canSyncErp, payload.user.role);
+      })()
+        .catch(() => {
+          clearSession();
+        })
+        .finally(() => setLoadingAuth(false));
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [clearSession, refreshAppState]);
+
+  const permissions = useMemo(
+    () => session?.permissions ?? { canEditOrders: false, canCaptureReturns: false, canSyncErp: false },
+    [session],
+  );
   const role = session?.user.role ?? null;
   const metrics = useMemo(() => buildMetrics(appState), [appState]);
   const allowedSections = useMemo(() => getAllowedSections(role, permissions), [role, permissions]);
   const visibleSection = allowedSections.includes(activeSection) ? activeSection : allowedSections[0];
   const canApprove = role === 'owner' || role === 'manager';
-
-  async function bootstrapSession(sessionToken: string) {
-    const response = await fetch(`${API_BASE_URL}/auth/me`, {
-      headers: authHeaders(sessionToken),
-    });
-
-    if (!response.ok) {
-      window.localStorage.removeItem('aeden-bakes-session-token');
-      setToken(null);
-      setSession(null);
-      return;
+  const {
+    customers,
+    products,
+    capacities,
+    slots,
+    orders,
+    auditEvents,
+    erpSyncStatus,
+    approvals,
+    supportCases,
+    standingOrders,
+    standingOrderRuns,
+    standingOrderPauses,
+    erpContractPreview,
+  } = appState;
+  const latestEvents = auditEvents.slice(0, 4);
+  const selectedCustomerOrders = selectedCustomer?.orders ?? [];
+  const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
+  const supportInbox = supportCases.filter((supportCase) => supportCase.status !== 'closed');
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const filteredCustomers = useMemo(() => {
+    if (!normalizedQuery) {
+      return customers;
     }
 
-    const payload = (await response.json()) as SessionPayload;
-    setSession(payload);
-    await refreshAppState(sessionToken, payload.permissions.canSyncErp);
-  }
-
-  async function refreshAppState(sessionToken = token, canSyncErp = session?.permissions.canSyncErp ?? false) {
-    const [customersRes, catalogRes, ordersRes, operationsRes, supportRes, standingRes] = await Promise.all([
-      fetch(`${API_BASE_URL}/customers`),
-      fetch(`${API_BASE_URL}/catalog`),
-      fetch(`${API_BASE_URL}/orders`),
-      sessionToken ? fetch(`${API_BASE_URL}/admin/operations`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
-      sessionToken ? fetch(`${API_BASE_URL}/support/cases`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
-      sessionToken ? fetch(`${API_BASE_URL}/standing-orders`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
-    ]);
-
-    if (!customersRes.ok || !catalogRes.ok || !ordersRes.ok) {
-      throw new Error('Could not refresh live data.');
+    return customers.filter((customer) =>
+      [
+        customer.name,
+        customer.tier,
+        customer.deliveryZone,
+        customer.riskState,
+        customer.id,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedQuery),
+    );
+  }, [customers, normalizedQuery]);
+  const filteredSupportInbox = useMemo(() => {
+    if (!normalizedQuery) {
+      return supportInbox;
     }
 
-    const [customersJson, catalogJson, ordersJson] = await Promise.all([
-      customersRes.json(),
-      catalogRes.json(),
-      ordersRes.json(),
-    ]);
-
-    let auditEvents: AuditEvent[] = [];
-    let approvals: ApprovalRequest[] = [];
-    let supportCases: SupportCase[] = [];
-    let standingOrders: StandingOrder[] = [];
-    let standingOrderRuns: StandingOrderRun[] = [];
-    let standingOrderPauses: StandingOrderPause[] = [];
-    let erpSyncStatus: ErpSyncStatus | null = null;
-    let erpContractPreview: VasyErpContractPreview | null = null;
-
-    if (operationsRes) {
-      if (!operationsRes.ok) {
-        throw new Error('Could not refresh operations feed.');
-      }
-      const operationsJson = await operationsRes.json();
-      auditEvents = operationsJson.auditEvents ?? [];
-      approvals = operationsJson.approvals ?? [];
-      erpSyncStatus = operationsJson.erpSyncStatus ?? null;
+    return supportInbox.filter((supportCase) =>
+      [
+        supportCase.subject,
+        supportCase.customerId,
+        supportCase.status,
+        supportCase.priority,
+        supportCase.id,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedQuery),
+    );
+  }, [normalizedQuery, supportInbox]);
+  const filteredEvents = useMemo(() => {
+    if (!normalizedQuery) {
+      return latestEvents;
     }
 
-    if (supportRes) {
-      if (!supportRes.ok) {
-        throw new Error('Could not refresh support inbox.');
-      }
-      const supportJson = await supportRes.json();
-      supportCases = supportJson.supportCases ?? [];
-    }
+    return latestEvents.filter((event) =>
+      [event.summary, event.actor, event.kind, event.referenceId].join(' ').toLowerCase().includes(normalizedQuery),
+    );
+  }, [latestEvents, normalizedQuery]);
+  const topCustomers = filteredCustomers.slice(0, 4);
+  const sectionLabel = {
+    overview: 'Command center',
+    customers: 'Customer directory',
+    production: 'Production board',
+    delivery: 'Delivery network',
+    operations: 'Operations control',
+  }[visibleSection];
+  const sectionSubtitle = {
+    overview: 'Live overview for Aeden Bakes',
+    customers: 'Accounts, risk, and service context',
+    production: 'Capacity, mix, and line readiness',
+    delivery: 'Route load, stops, and timing',
+    operations: 'Approvals, returns, and ERP sync',
+  }[visibleSection];
+  const sessionInitials = session?.user.displayName
+    .split(' ')
+    .map((part) => part[0] ?? '')
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'AB';
 
-    if (standingRes) {
-      if (!standingRes.ok) {
-        throw new Error('Could not refresh recurring orders.');
-      }
-      const standingJson = await standingRes.json();
-      standingOrders = standingJson.standingOrders ?? [];
-      standingOrderRuns = standingJson.standingOrderRuns ?? [];
-      standingOrderPauses = standingJson.standingOrderPauses ?? [];
-    }
-
-    if (sessionToken && canSyncErp) {
-      const contractResponse = await fetch(`${API_BASE_URL}/erp/vasy/contract`, {
-        headers: authHeaders(sessionToken),
+  async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = 6000) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, {
+        ...init,
+        signal: controller.signal,
       });
-      if (contractResponse.ok) {
-        erpContractPreview = (await contractResponse.json()) as VasyErpContractPreview;
-      }
+    } finally {
+      window.clearTimeout(timer);
     }
-
-    setAppState({
-      customers: customersJson.customers ?? [],
-      products: catalogJson.products ?? [],
-      capacities: catalogJson.capacities ?? [],
-      slots: catalogJson.slots ?? [],
-      orders: ordersJson.orders ?? [],
-      auditEvents,
-      erpSyncStatus,
-      approvals,
-      supportCases,
-      standingOrders,
-      standingOrderRuns,
-      standingOrderPauses,
-      erpContractPreview,
-    });
   }
 
   async function login() {
@@ -469,15 +863,19 @@ export default function Home() {
     }
 
     const payload = (await response.json()) as { token: string; user: AuthUser };
-    window.localStorage.setItem('aeden-bakes-session-token', payload.token);
+    window.sessionStorage.setItem('aeden-bakes-session-token', payload.token);
     setToken(payload.token);
 
-    const meResponse = await fetch(`${API_BASE_URL}/auth/me`, {
+    const meResponse = await fetchWithTimeout(`${API_BASE_URL}/auth/me`, {
       headers: authHeaders(payload.token),
     });
+    if (!meResponse.ok) {
+      clearSession();
+      throw new Error('Session expired');
+    }
     const mePayload = (await meResponse.json()) as SessionPayload;
     setSession(mePayload);
-    await refreshAppState(payload.token, mePayload.permissions.canSyncErp);
+    await refreshAppState(payload.token, mePayload.permissions.canSyncErp, mePayload.user.role);
     setActionMessage(`Signed in as ${payload.user.displayName}.`);
   }
 
@@ -489,9 +887,7 @@ export default function Home() {
       }).catch(() => undefined);
     }
 
-    window.localStorage.removeItem('aeden-bakes-session-token');
-    setToken(null);
-    setSession(null);
+    clearSession();
     setAppState(initialAppState);
     setSelectedCustomer(null);
     setActiveSection('overview');
@@ -668,28 +1064,874 @@ export default function Home() {
     );
   }
 
-  const roleLabel = session.user.role;
-  const {
-    customers,
-    products,
-    capacities,
-    slots,
-    orders,
-    auditEvents,
-    erpSyncStatus,
-    approvals,
-    supportCases,
-    standingOrders,
-    standingOrderRuns,
-    standingOrderPauses,
-    erpContractPreview,
-  } = appState;
-  const latestEvents = auditEvents.slice(0, 4);
-  const selectedCustomerOrders = selectedCustomer?.orders ?? [];
-  const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
-  const supportInbox = supportCases.filter((supportCase) => supportCase.status !== 'closed');
+  const sessionData = session;
+  const roleLabel = describeRole(sessionData.user.role);
+  function renderAimsPortalShell() {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(217,119,6,.14),transparent_26%),radial-gradient(circle_at_bottom_right,rgba(124,63,18,.10),transparent_28%),linear-gradient(180deg,#fcf7f0_0%,#f6eadc_100%)] text-slate-900">
+        <div className="min-h-screen">
+          <aside className="relative border-b border-slate-800/70 bg-[linear-gradient(180deg,#241207_0%,#4a2a16_58%,#7c3f12_100%)] text-slate-100 shadow-[0_30px_70px_rgba(8,15,34,.22)] lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:flex lg:w-72 lg:flex-col lg:border-b-0">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(125,211,252,.2),transparent_30%),linear-gradient(180deg,rgba(255,255,255,.06),transparent_45%)]" />
+            <div className="relative flex items-center gap-3 px-5 py-5 lg:px-6">
+              <BrandMark />
+              <div>
+                <div className="text-[1.35rem] font-black tracking-tight">Aeden Bakes</div>
+                <div className="text-sm text-slate-300">Super-admin portal</div>
+              </div>
+            </div>
 
-  return (
+            <div className="relative px-5 lg:px-6">
+              <div className="rounded-[1.5rem] border border-white/10 bg-white/8 p-4 shadow-[0_16px_40px_rgba(3,7,18,.18)] backdrop-blur">
+                <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-200">Session</div>
+                <div className="mt-2 text-lg font-semibold text-white">{sessionData.user.displayName}</div>
+                <div className="mt-1 text-sm text-slate-300">{roleLabel}</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    logout().catch((logoutError) => setError((logoutError as Error).message));
+                  }}
+                  className="mt-4 inline-flex h-11 items-center justify-center rounded-full border border-white/15 bg-white/10 px-4 text-sm font-semibold text-white transition hover:bg-white/15"
+                >
+                  Sign out
+                </button>
+              </div>
+            </div>
+
+            <nav className="relative mt-5 flex-1 space-y-2 px-3 pb-4 lg:px-4">
+              {allowedSections.map((section) => {
+                const active = visibleSection === section;
+                const meta =
+                  {
+                    overview: { label: 'Dashboard', hint: 'Command center' },
+                    customers: { label: 'Customers', hint: `${customers.length} accounts` },
+                    production: { label: 'Production', hint: `${capacities.length} lines` },
+                    delivery: { label: 'Delivery', hint: `${slots.length} routes` },
+                    operations: { label: 'Operations', hint: `${pendingApprovals.length} approvals` },
+                  }[section];
+
+                return (
+                  <button
+                    key={section}
+                    type="button"
+                    onClick={() => setActiveSection(section)}
+                    className={`flex w-full items-center gap-3 rounded-[1.35rem] border px-4 py-3 text-left transition ${
+                      active
+                        ? 'border-amber-400/50 bg-amber-500/20 text-white shadow-[0_14px_32px_rgba(14,116,144,.28)]'
+                        : 'border-transparent bg-transparent text-slate-300 hover:border-white/10 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <span
+                      className={`grid h-10 w-10 shrink-0 place-items-center rounded-2xl border ${
+                        active ? 'border-amber-300/35 bg-white/15' : 'border-white/10 bg-white/5'
+                      }`}
+                    >
+                      <SidebarGlyph kind={section} active={active} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold uppercase tracking-[0.18em]">
+                        {meta.label}
+                      </span>
+                      <span className="block text-xs text-slate-300">{meta.hint}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="relative px-5 py-5 lg:px-6">
+              <div className="rounded-[1.5rem] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-200">Access</div>
+                <div className="mt-3 space-y-2 text-sm text-slate-200">
+                  {describeAccess(sessionData.user.role, permissions)
+                    .slice(0, 4)
+                    .map((line) => (
+                      <div key={line} className="flex items-start gap-2">
+                        <span className="mt-1 h-2 w-2 rounded-full bg-amber-300/90" />
+                        <span>{line}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          <div className="flex min-h-screen flex-col lg:pl-72">
+            <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/85 backdrop-blur-xl">
+              <div className="flex flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8 xl:flex-row xl:items-center">
+                <div className="space-y-1">
+                  <div className="text-[0.7rem] font-black uppercase tracking-[0.28em] text-amber-700">
+                    Aeden Bakes super-admin
+                  </div>
+                  <h1 className="text-2xl font-black tracking-tight text-slate-950">{sectionLabel}</h1>
+                  <p className="text-sm text-slate-500">{sectionSubtitle}</p>
+                </div>
+
+                <div className="flex-1" />
+
+                <div className="flex w-full flex-col gap-3 xl:max-w-5xl xl:flex-row xl:items-center">
+                  <label className="relative flex-1">
+                    <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-400">
+                      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current stroke-[2]">
+                        <circle cx="11" cy="11" r="7" />
+                        <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+                      </svg>
+                    </span>
+                    <input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Search customers, orders, cases, or events..."
+                      className="h-14 w-full rounded-full border border-slate-200 bg-white px-12 py-3 text-sm text-slate-900 shadow-[0_10px_30px_rgba(36,18,7,.06)] outline-none transition placeholder:text-slate-400 focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                    />
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!token) return;
+                        refreshAppState(token, permissions.canSyncErp).catch((refreshError) =>
+                          setError((refreshError as Error).message),
+                        );
+                      }}
+                      className="inline-flex h-12 items-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300"
+                    >
+                      Refresh
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveSection('operations')}
+                      className="inline-flex h-12 items-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(36,18,7,.22)] transition hover:-translate-y-0.5"
+                    >
+                      Open operations
+                    </button>
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-sm font-bold text-amber-700 shadow-sm">
+                      {sessionInitials}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <div className="flex-1 px-4 py-5 sm:px-6 lg:px-8">
+              <div className="space-y-5">
+                {actionMessage ? (
+                  <div className="rounded-[1.4rem] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-sm">
+                    {actionMessage}
+                  </div>
+                ) : null}
+                {error ? (
+                  <div className="rounded-[1.4rem] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900 shadow-sm">
+                    API error: {error}
+                  </div>
+                ) : null}
+
+                <section className="grid gap-5 xl:grid-cols-[1.25fr_.9fr]">
+                  <div className="relative overflow-hidden rounded-[2.4rem] border border-slate-200/80 bg-[linear-gradient(135deg,#241207_0%,#7c3f12_45%,#d97706_100%)] p-6 text-white shadow-[0_28px_80px_rgba(36,18,7,.18)] sm:p-8">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,.16),transparent_32%),linear-gradient(180deg,rgba(255,255,255,.05),transparent_45%)]" />
+                    <div className="relative space-y-5">
+                      <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-[0.68rem] font-black uppercase tracking-[0.26em] text-amber-100">
+                        Aeden command desk
+                      </div>
+                      <h2 className="max-w-3xl text-4xl font-black tracking-tight text-white sm:text-5xl">
+                        Every batch, order, and route stays visible from planning to delivery.
+                      </h2>
+                      <p className="max-w-2xl text-base leading-7 text-slate-200/90">
+                        Enterprise operations workspace for Aeden Bakes: customer risk, production
+                        capacity, delivery timing, and approvals in one place.
+                      </p>
+                      <div className="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setActiveSection('operations')}
+                          className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-950/20 transition hover:-translate-y-0.5"
+                        >
+                          Open workbench
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveSection('customers')}
+                          className="rounded-full border border-white/20 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/15"
+                        >
+                          Review customers
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-100">
+                          Role: {sessionData.user.role}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-100">
+                          {permissions.canEditOrders ? 'Order edits enabled' : 'Order edits restricted'}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-100">
+                          {permissions.canSyncErp ? 'ERP sync enabled' : 'ERP sync restricted'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
+                    <Metric label="Live orders" value={String(metrics.orders)} />
+                    <Metric label="Receivables" value={`₹${metrics.outstanding.toLocaleString()}`} />
+                    <Metric label="Production fill" value={`${metrics.capacityFill}%`} />
+                    <Metric label="Route fill" value={`${metrics.routeFill}%`} />
+                  </div>
+
+                  <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">ERP sync</div>
+                    {erpSyncStatus ? (
+                      <div className="mt-3 space-y-2">
+                        <StatusRow label="Provider" value={erpSyncStatus.provider} tone="good" />
+                        <StatusRow
+                          label="Sync state"
+                          value={erpSyncStatus.state}
+                          tone={erpSyncStatus.state === 'healthy' ? 'good' : erpSyncStatus.state === 'degraded' ? 'warn' : 'bad'}
+                        />
+                        <StatusRow label="Queued" value={`${erpSyncStatus.pendingCount} pending`} tone="warn" />
+                        <StatusRow label="Failures" value={`${erpSyncStatus.failedCount} needs review`} tone="bad" />
+                      </div>
+                    ) : (
+                      <GateMessage message="ERP feed is not loaded yet." />
+                    )}
+                  </div>
+                </section>
+
+                <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                  <div className="rounded-[1.5rem] border-t-4 border-amber-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">Live orders</div>
+                    <div className="mt-3 text-3xl font-black text-slate-950">{metrics.orders}</div>
+                    <div className="mt-2 text-sm text-slate-500">Orders flowing through the system today.</div>
+                  </div>
+                  <div className="rounded-[1.5rem] border-t-4 border-emerald-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">Receivables</div>
+                    <div className="mt-3 text-3xl font-black text-slate-950">₹{metrics.outstanding.toLocaleString()}</div>
+                    <div className="mt-2 text-sm text-slate-500">Outstanding balance across active accounts.</div>
+                  </div>
+                  <div className="rounded-[1.5rem] border-t-4 border-amber-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">Production fill</div>
+                    <div className="mt-3 text-3xl font-black text-slate-950">{metrics.capacityFill}%</div>
+                    <div className="mt-2 text-sm text-slate-500">Booked against available capacity.</div>
+                  </div>
+                  <div className="rounded-[1.5rem] border-t-4 border-violet-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">Route fill</div>
+                    <div className="mt-3 text-3xl font-black text-slate-950">{metrics.routeFill}%</div>
+                    <div className="mt-2 text-sm text-slate-500">Dispatch load across today’s slots.</div>
+                  </div>
+                  <div className="rounded-[1.5rem] border-t-4 border-rose-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">Approvals</div>
+                    <div className="mt-3 text-3xl font-black text-slate-950">{pendingApprovals.length}</div>
+                    <div className="mt-2 text-sm text-slate-500">Pending manager or owner decisions.</div>
+                  </div>
+                </section>
+
+                {visibleSection === 'overview' ? (
+                  <section className="grid gap-5 xl:grid-cols-[1.05fr_.95fr]">
+                    <Card title="Operations workbench" subtitle="Role-aware next actions for the admin queue.">
+                      <div className="space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                            <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Queue</div>
+                            <div className="mt-1 text-2xl font-black text-slate-950">{pendingApprovals.length}</div>
+                            <div className="text-sm text-slate-500">Items waiting on a decision.</div>
+                          </div>
+                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                            <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Open cases</div>
+                            <div className="mt-1 text-2xl font-black text-slate-950">{supportInbox.length}</div>
+                            <div className="text-sm text-slate-500">Support work that still needs attention.</div>
+                          </div>
+                        </div>
+                        {topCustomers.length > 0 ? (
+                          <div className="space-y-3">
+                            {topCustomers.map((customer) => (
+                              <button
+                                key={customer.id}
+                                type="button"
+                                onClick={() => {
+                                  loadCustomerDetail(customer.id).catch((detailError) =>
+                                    setError((detailError as Error).message),
+                                  );
+                                }}
+                                className="grid w-full gap-3 rounded-[1.35rem] border border-slate-200 bg-slate-50 px-4 py-4 text-left md:grid-cols-[1fr_auto_auto]"
+                              >
+                                <div>
+                                  <div className="font-extrabold text-slate-950">{customer.name}</div>
+                                  <div className="text-sm text-slate-500">{customer.tier}</div>
+                                </div>
+                                <InfoBlock
+                                  label="Outstanding"
+                                  value={`₹${customer.outstandingBalance.toLocaleString()}`}
+                                />
+                                <InfoBlock label="Risk" value={customer.riskState.replace('_', ' ')} />
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <GateMessage message="No customers match the current search." />
+                        )}
+                      </div>
+                    </Card>
+
+                    <Card title="Guardrail watch" subtitle="Live exceptions and recent activity.">
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          {buildAlerts(customers, capacities).map((alert) => (
+                            <div
+                              key={alert}
+                              className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+                            >
+                              {alert}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="space-y-3">
+                          {filteredEvents.length > 0 ? (
+                            filteredEvents.map((event) => (
+                              <div key={event.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-400">
+                                  {event.kind}
+                                </div>
+                                <div className="mt-1 text-sm font-semibold text-slate-950">{event.summary}</div>
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {event.actor} | {event.createdAt}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <GateMessage message="No audit events matched this view." />
+                          )}
+                        </div>
+                      </div>
+                    </Card>
+                  </section>
+                ) : null}
+
+                {visibleSection === 'customers' ? (
+                  <section className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
+                    <Card title="Customer directory" subtitle="Click any account for a live drill-down.">
+                      <div className="space-y-3">
+                        {filteredCustomers.length > 0 ? (
+                          filteredCustomers.map((customer) => (
+                            <button
+                              key={customer.id}
+                              type="button"
+                              onClick={() => {
+                                loadCustomerDetail(customer.id).catch((detailError) =>
+                                  setError((detailError as Error).message),
+                                );
+                              }}
+                              className="grid w-full gap-4 rounded-[1.35rem] border border-slate-200 bg-slate-50 px-4 py-4 text-left md:grid-cols-[1fr_auto_auto_auto]"
+                            >
+                              <div>
+                                <div className="text-lg font-extrabold text-slate-950">{customer.name}</div>
+                                <div className="text-sm text-slate-500">{customer.tier}</div>
+                              </div>
+                              <InfoBlock
+                                label="Outstanding"
+                                value={`₹${customer.outstandingBalance.toLocaleString()}`}
+                              />
+                              <InfoBlock label="Risk" value={customer.riskState.replace('_', ' ')} />
+                              <InfoBlock label="Zone" value={customer.deliveryZone} />
+                            </button>
+                          ))
+                        ) : (
+                          <GateMessage message="No customer records matched the search." />
+                        )}
+                      </div>
+                    </Card>
+
+                    <Card title="Customer 360" subtitle="Open one account to inspect orders, notes, timeline, and support work.">
+                      {selectedCustomer ? (
+                        <div className="space-y-5">
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="text-lg font-black text-slate-950">{selectedCustomer.customer.name}</div>
+                            <div className="mt-1 text-sm text-slate-500">{selectedCustomer.customer.tier}</div>
+                            {selectedCustomer.auth ? (
+                              <div className="mt-2 text-xs text-slate-500">
+                                Login {selectedCustomer.auth.loginId} | {selectedCustomer.auth.defaultAddress ?? 'No address'}
+                              </div>
+                            ) : null}
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                              <InfoBlock
+                                label="Credit limit"
+                                value={`₹${selectedCustomer.customer.creditLimit.toLocaleString()}`}
+                              />
+                              <InfoBlock
+                                label="Outstanding"
+                                value={`₹${selectedCustomer.customer.outstandingBalance.toLocaleString()}`}
+                              />
+                              <InfoBlock label="Risk state" value={selectedCustomer.customer.riskState.replace('_', ' ')} />
+                              <InfoBlock label="Delivery zone" value={selectedCustomer.customer.deliveryZone} />
+                              <InfoBlock label="Branches" value={String(selectedCustomer.branches.length)} />
+                              <InfoBlock label="Users" value={String(selectedCustomer.users.length)} />
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Branches</div>
+                            {selectedCustomer.branches.length > 0 ? (
+                              selectedCustomer.branches.map((branch) => (
+                                <div key={branch.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                      <div className="text-sm font-semibold text-slate-950">{branch.name}</div>
+                                      <div className="text-xs text-slate-500">
+                                        {branch.code} | {branch.serviceZone} zone
+                                      </div>
+                                    </div>
+                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{branch.status}</div>
+                                  </div>
+                                  {branch.deliveryNotes ? (
+                                    <div className="mt-2 text-sm text-slate-600">{branch.deliveryNotes}</div>
+                                  ) : null}
+                                </div>
+                              ))
+                            ) : (
+                              <GateMessage message="No branches are attached to this customer yet." />
+                            )}
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Customer users</div>
+                            {selectedCustomer.users.length > 0 ? (
+                              selectedCustomer.users.map((user) => (
+                                <div key={user.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                      <div className="text-sm font-semibold text-slate-950">{user.displayName}</div>
+                                      <div className="text-xs text-slate-500">
+                                        {user.role} | {user.branchId ?? 'account-wide'}
+                                      </div>
+                                    </div>
+                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{user.status}</div>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <GateMessage message="No customer users have been invited yet." />
+                            )}
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">
+                              Support notes
+                            </div>
+                            {selectedCustomer.notes.length > 0 ? (
+                              selectedCustomer.notes.map((note) => (
+                                <div key={note.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-slate-950">{note.noteType}</div>
+                                    <div className="text-xs text-slate-500">{note.createdAt}</div>
+                                  </div>
+                                  <div className="mt-1 text-sm text-slate-600">{note.note}</div>
+                                </div>
+                              ))
+                            ) : (
+                              <GateMessage message="No notes have been added yet." />
+                            )}
+                            <div className="grid gap-2">
+                              <Field
+                                label="Add note"
+                                value={supportNoteDraft}
+                                onChange={setSupportNoteDraft}
+                                placeholder="Add a support note for this customer"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  addCustomerNote().catch((noteError) => setError((noteError as Error).message));
+                                }}
+                                className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white"
+                              >
+                                Save note
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">
+                              Support case
+                            </div>
+                            <Field
+                              label="Open case"
+                              value={supportCaseDraft}
+                              onChange={setSupportCaseDraft}
+                              placeholder="Issue summary"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                openSupportCase().catch((caseError) => setError((caseError as Error).message));
+                              }}
+                              className="rounded-2xl bg-amber-600 px-4 py-3 text-sm font-bold text-white"
+                            >
+                              Open case
+                            </button>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Orders</div>
+                            {selectedCustomerOrders.length > 0 ? (
+                              selectedCustomerOrders.map((order) => (
+                                <div key={order.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                  <div className="font-semibold text-slate-950">{order.id}</div>
+                                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{order.status}</div>
+                                </div>
+                                <div className="mt-1 text-sm text-slate-600">
+                                    {order.serviceDate} | {order.paymentMode} | ₹{order.amountTotal.toLocaleString()}
+                                    {order.branchId ? ` | Branch ${order.branchId}` : ''}
+                                </div>
+                              </div>
+                            ))
+                            ) : (
+                              <GateMessage message="No orders found for this customer." />
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <GateMessage message="Pick any customer to open a full 360 view." />
+                      )}
+                    </Card>
+                  </section>
+                ) : null}
+
+                {visibleSection === 'production' ? (
+                  <section className="grid gap-5 xl:grid-cols-[1.05fr_.95fr]">
+                    <Card title="Production board" subtitle="What the floor needs to make next.">
+                      <div className="overflow-hidden rounded-[1.35rem] border border-slate-200">
+                        <div className="grid grid-cols-3 bg-slate-950 px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-slate-200">
+                          <span>Item</span>
+                          <span>Capacity</span>
+                          <span>Booked</span>
+                        </div>
+                        {products.map((product) => {
+                          const capacity = capacities.find((entry) => entry.productId === product.id);
+                          return (
+                            <div
+                              key={product.id}
+                              className="grid grid-cols-3 border-t border-slate-200 bg-slate-50 px-4 py-4 text-sm"
+                            >
+                              <span className="font-semibold text-slate-950">{product.name}</span>
+                              <span>{capacity ? capacity.capacity : '-'}</span>
+                              <span>{capacity ? capacity.bookedQuantity : '-'}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </Card>
+
+                    <Card title="Capacity ledger" subtitle="Line health and booked order pressure.">
+                      <div className="space-y-3">
+                        {capacities.length > 0 ? (
+                          capacities.map((capacity) => (
+                            <div key={capacity.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="font-semibold text-slate-950">
+                                    {products.find((product) => product.id === capacity.productId)?.name ?? capacity.productId}
+                                  </div>
+                                  <div className="text-sm text-slate-500">
+                                    {capacity.serviceDate} | version {capacity.version}
+                                  </div>
+                                </div>
+                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{capacity.status}</div>
+                              </div>
+                              <div className="mt-2 text-sm text-slate-600">
+                                {capacity.bookedQuantity} booked of {capacity.capacity}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No capacity records are available yet." />
+                        )}
+                      </div>
+                    </Card>
+                  </section>
+                ) : null}
+
+                {visibleSection === 'delivery' ? (
+                  <section className="grid gap-5 xl:grid-cols-[1.05fr_.95fr]">
+                    <Card title="Route manifest" subtitle="Driver-facing stop order and load.">
+                      <div className="space-y-3">
+                        {slots.length > 0 ? (
+                          slots.map((slot) => (
+                            <div key={slot.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="font-semibold text-slate-950">{slot.label}</div>
+                                  <div className="text-sm text-slate-500">{slot.zone} zone</div>
+                                </div>
+                                <div className="text-sm font-black text-slate-700">
+                                  {slot.bookedOrders} / {slot.maxOrders}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No route slots have been configured." />
+                        )}
+                      </div>
+                    </Card>
+
+                    <Card title="Delivery exceptions" subtitle="Live issues that need an operations response.">
+                      <div className="space-y-3">
+                        {filteredSupportInbox.length > 0 ? (
+                          filteredSupportInbox.map((supportCase) => (
+                            <div key={supportCase.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="font-semibold text-slate-950">{supportCase.subject}</div>
+                                  <div className="text-xs text-slate-500">{supportCase.customerId}</div>
+                                </div>
+                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{supportCase.status}</div>
+                              </div>
+                              <div className="mt-2 text-sm text-slate-700">
+                                {supportCase.priority} priority | updated {supportCase.lastUpdatedAt}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No open support cases matched the search." />
+                        )}
+                      </div>
+                    </Card>
+                  </section>
+                ) : null}
+
+                {visibleSection === 'operations' ? (
+                  <section className="grid gap-5 xl:grid-cols-[1fr_1fr]">
+                    <Card title="Control actions" subtitle="Only permitted roles can use these levers.">
+                      <div className="space-y-3">
+                        <ActionButton
+                          enabled={permissions.canEditOrders && Boolean(orders[0])}
+                          label="Edit order quantity"
+                          onClick={() => {
+                            if (!orders[0]) return;
+                            performAction(
+                              `/admin/orders/${orders[0].id}/adjust`,
+                              {
+                                actor: sessionData.user.role,
+                                productId: orders[0].items[0]?.productId ?? '',
+                                quantityDelta: -2,
+                                note: 'Adjusted from admin portal.',
+                              },
+                              'Order adjustment recorded and production state refreshed.',
+                            ).catch((actionError) => setError((actionError as Error).message));
+                          }}
+                        />
+                        <ActionButton
+                          enabled={permissions.canCaptureReturns && Boolean(orders[0])}
+                          label="Register return"
+                          onClick={() => {
+                            if (!orders[0]) return;
+                            performAction(
+                              `/admin/orders/${orders[0].id}/returns`,
+                              {
+                                actor: sessionData.user.role,
+                                quantity: 3,
+                                note: 'Return captured from failed doorstep delivery.',
+                              },
+                              'Return captured and audit trail updated.',
+                            ).catch((actionError) => setError((actionError as Error).message));
+                          }}
+                        />
+                        <ActionButton
+                          enabled={permissions.canSyncErp}
+                          label="Trigger ERP sync"
+                          onClick={() => {
+                            performAction(
+                              '/erp/sync/trigger',
+                              { actor: sessionData.user.role },
+                              'Vasy ERP sync triggered and completed.',
+                            ).catch((actionError) => setError((actionError as Error).message));
+                          }}
+                        />
+
+                        <div className="space-y-3 pt-2">
+                          <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Approvals</div>
+                          {pendingApprovals.length > 0 ? (
+                            pendingApprovals.map((approval) => (
+                              <div key={approval.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <div className="text-sm font-extrabold text-slate-950">{approval.action}</div>
+                                    <div className="text-xs text-slate-500">Target: {approval.targetId}</div>
+                                  </div>
+                                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{approval.status}</div>
+                                </div>
+                                <div className="mt-2 text-sm text-slate-700">{approval.reason}</div>
+                                <div className="mt-2 text-xs text-slate-500">Requested by {approval.requestedBy}</div>
+                                <div className="mt-3 flex gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={!canApprove}
+                                    onClick={() => {
+                                      performAction(
+                                        `/approvals/${approval.id}/approve`,
+                                        { actor: sessionData.user.role },
+                                        'Approval accepted.',
+                                      ).catch((approvalError) => setError((approvalError as Error).message));
+                                    }}
+                                    className="rounded-full bg-emerald-600 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!canApprove}
+                                    onClick={() => {
+                                      performAction(
+                                        `/approvals/${approval.id}/reject`,
+                                        { actor: sessionData.user.role },
+                                        'Approval rejected.',
+                                      ).catch((approvalError) => setError((approvalError as Error).message));
+                                    }}
+                                    className="rounded-full bg-slate-200 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <GateMessage message="No approvals are waiting right now." />
+                          )}
+                        </div>
+                      </div>
+                    </Card>
+
+                    <Card title="Recurring orders" subtitle="Create standing demand, pause it, or batch-generate runs.">
+                      <div className="space-y-4">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <Field label="Customer" value={standingOrderCustomerId} onChange={setStandingOrderCustomerId} />
+                          <Field label="Slot" value={standingOrderSlotId} onChange={setStandingOrderSlotId} />
+                          <Field
+                            label="Days"
+                            value={standingOrderDaysDraft}
+                            onChange={setStandingOrderDaysDraft}
+                            placeholder="1,2,3,4,5"
+                          />
+                          <label className="grid gap-2">
+                            <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                              Payment mode
+                            </span>
+                            <select
+                              value={standingOrderPaymentMode}
+                              onChange={(event) =>
+                                setStandingOrderPaymentMode(event.target.value as 'prepaid' | 'part-pay' | 'credit')
+                              }
+                              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-amber-400"
+                            >
+                              <option value="prepaid">prepaid</option>
+                              <option value="part-pay">part-pay</option>
+                              <option value="credit">credit</option>
+                            </select>
+                          </label>
+                        </div>
+                        <Field
+                          label="Items JSON"
+                          value={standingOrderItemsDraft}
+                          onChange={setStandingOrderItemsDraft}
+                          placeholder='[{"productId":"prod_loaf","quantity":12}]'
+                        />
+                        <Field
+                          label="Notes"
+                          value={standingOrderNotesDraft}
+                          onChange={setStandingOrderNotesDraft}
+                          placeholder="Weekday breakfast repeat."
+                        />
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Field
+                            label="Run date"
+                            value={standingOrderRunDate}
+                            onChange={setStandingOrderRunDate}
+                            type="date"
+                          />
+                          <div className="flex items-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                createStandingOrder().catch((actionError) => setError((actionError as Error).message));
+                              }}
+                              className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white"
+                            >
+                              Create standing order
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                generateStandingOrderRuns().catch((actionError) => setError((actionError as Error).message));
+                              }}
+                              className="rounded-2xl bg-amber-600 px-4 py-3 text-sm font-bold text-white"
+                            >
+                              Generate runs
+                            </button>
+                          </div>
+                        </div>
+                        <div className="space-y-3">
+                          {standingOrders.length > 0 ? (
+                            standingOrders.slice(0, 6).map((standingOrder) => (
+                              <div key={standingOrder.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <div className="font-semibold text-slate-950">{standingOrder.id}</div>
+                                    <div className="text-xs text-slate-500">
+                                      {customers.find((customer) => customer.id === standingOrder.customerId)?.name ??
+                                        standingOrder.customerId}
+                                    </div>
+                                  </div>
+                                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{standingOrder.status}</div>
+                                </div>
+                                <div className="mt-2 text-sm text-slate-600">
+                                  Days {standingOrder.schedule.deliveryDays.join(', ')} | slot {standingOrder.schedule.slotId}
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      updateStandingOrderStatus(
+                                        standingOrder.id,
+                                        standingOrder.status === 'paused' ? 'active' : 'paused',
+                                      ).catch((actionError) => setError((actionError as Error).message));
+                                    }}
+                                    className="rounded-full bg-slate-950 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white"
+                                  >
+                                    {standingOrder.status === 'paused' ? 'Resume' : 'Pause'}
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <GateMessage message="No standing orders are configured yet." />
+                          )}
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                          Runs created: {standingOrderRuns.length} | Pauses: {standingOrderPauses.length}
+                        </div>
+                        {erpContractPreview ? (
+                          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">ERP contract preview</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {erpContractPreview.orderCount} orders, {erpContractPreview.batchCount} batches
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              Exported {erpContractPreview.exportedAt}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </Card>
+                  </section>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  return renderAimsPortalShell();
+
+  /*
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(255,210,172,.35),_transparent_28%),linear-gradient(180deg,#fff8f0_0%,#f6eadc_100%)] text-stone-900">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
         <header className="grid gap-4 rounded-[2rem] border border-stone-200/70 bg-white/80 p-6 shadow-[0_24px_80px_rgba(87,50,20,.12)] backdrop-blur lg:grid-cols-[1.45fr_.95fr]">
@@ -710,7 +1952,7 @@ export default function Home() {
                 Active session
               </div>
               <div className="rounded-full bg-stone-950 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-stone-50">
-                {session.user.displayName} | {roleLabel}
+                {sessionData.user.displayName} | {roleLabel}
               </div>
               <button
                 type="button"
@@ -771,7 +2013,7 @@ export default function Home() {
             {visibleSection === 'overview' ? (
               <div className="grid gap-6 lg:grid-cols-2">
                 <Card title="Customer access" subtitle="Open accounts and inspect context.">
-                  {session.permissions.canEditOrders || session.user.role === 'owner' ? (
+                  {sessionData.permissions.canEditOrders || sessionData.user.role === 'owner' ? (
                     <div className="space-y-3">
                       {customers.slice(0, 3).map((customer) => (
                         <button
@@ -894,7 +2136,7 @@ export default function Home() {
                         performAction(
                           `/admin/orders/${orders[0].id}/adjust`,
                           {
-                            actor: session.user.role,
+                            actor: sessionData.user.role,
                             productId: orders[0].items[0]?.productId ?? '',
                             quantityDelta: -2,
                             note: 'Adjusted from admin portal.',
@@ -911,7 +2153,7 @@ export default function Home() {
                         performAction(
                           `/admin/orders/${orders[0].id}/returns`,
                           {
-                            actor: session.user.role,
+                            actor: sessionData.user.role,
                             quantity: 3,
                             note: 'Return captured from failed doorstep delivery.',
                           },
@@ -925,7 +2167,7 @@ export default function Home() {
                       onClick={() => {
                         performAction(
                           '/erp/sync/trigger',
-                          { actor: session.user.role },
+                          { actor: sessionData.user.role },
                           'Vasy ERP sync triggered and completed.',
                         ).catch((actionError) => setError((actionError as Error).message));
                       }}
@@ -1296,7 +2538,7 @@ export default function Home() {
                                 'Content-Type': 'application/json',
                                 ...authHeaders(token),
                               },
-                              body: JSON.stringify({ decision: 'approve', actor: session.user.role }),
+                              body: JSON.stringify({ decision: 'approve', actor: sessionData.user.role }),
                             })
                               .then(async (response) => {
                                 if (!response.ok) {
@@ -1323,7 +2565,7 @@ export default function Home() {
                                 'Content-Type': 'application/json',
                                 ...authHeaders(token),
                               },
-                              body: JSON.stringify({ decision: 'reject', actor: session.user.role }),
+                              body: JSON.stringify({ decision: 'reject', actor: sessionData.user.role }),
                             })
                               .then(async (response) => {
                                 if (!response.ok) {
@@ -1397,9 +2639,22 @@ export default function Home() {
               )}
             </Card>
 
+            <Card title="Phase 3 commercial layer" subtitle="Notifications, health, alerts, and customer self-service in one place.">
+              <div className="grid gap-3 md:grid-cols-2">
+                <InfoBlock label="Notifications" value={`${appState.notifications.jobs.length} jobs`} />
+                <InfoBlock label="Deliveries" value={`${appState.notifications.deliveries.length} records`} />
+                <InfoBlock label="Health snapshots" value={`${appState.accountHealth.snapshots.length}`} />
+                <InfoBlock label="Alert events" value={`${appState.alertEvents.length}`} />
+                <InfoBlock label="Customer requests" value={`${appState.customerRequests.length}`} />
+                <InfoBlock label="Saved addresses" value={`${appState.savedAddresses.length}`} />
+                <InfoBlock label="Analytics snapshots" value={`${appState.analytics.snapshots.length}`} />
+                <InfoBlock label="Reports" value={`${appState.reportExports.length}`} />
+              </div>
+            </Card>
+
             <Card title="Role scope" subtitle="What this role can touch right now.">
               <div className="space-y-2 text-sm text-stone-700">
-                {describeAccess(session.user.role, permissions).map((line) => (
+                {describeAccess(sessionData.user.role, permissions).map((line) => (
                   <div key={line} className="rounded-2xl bg-stone-50 px-4 py-3">
                     {line}
                   </div>
@@ -1434,12 +2689,14 @@ export default function Home() {
       </div>
     </main>
   );
-}
+*/
 
 function authHeaders(token: string) {
   return {
     Authorization: `Bearer ${token}`,
   };
+}
+
 }
 
 function buildMetrics(state: AppState) {
@@ -1529,6 +2786,67 @@ function buildAlerts(customers: CustomerAccount[], capacities: ProductDayCapacit
   return alerts;
 }
 
+function BrandMark() {
+  return (
+    <div className="grid h-12 w-12 place-items-center rounded-[1.15rem] bg-[linear-gradient(135deg,#f59e0b_0%,#d97706_55%,#7c3f12_100%)] shadow-[0_18px_40px_rgba(36,18,7,.35)]">
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-7 w-7 text-white" fill="none" stroke="currentColor" strokeWidth="1.9">
+        <path d="M4 10.5 12 6l8 4.5v7L12 22l-8-4.5z" />
+        <path d="M8 11.2v5.1M12 9.4v7.8M16 11.2v5.1" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+}
+
+function SidebarGlyph({ kind, active }: { kind: 'overview' | 'customers' | 'production' | 'delivery' | 'operations'; active: boolean }) {
+  const glyphClass = active ? 'text-white' : 'text-slate-300';
+
+  switch (kind) {
+    case 'overview':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 ${glyphClass}`} fill="none" stroke="currentColor" strokeWidth="1.9">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </svg>
+      );
+    case 'customers':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 ${glyphClass}`} fill="none" stroke="currentColor" strokeWidth="1.9">
+          <circle cx="9" cy="9" r="3" />
+          <path d="M3.5 20c.8-3.5 3.1-5.5 5.5-5.5S13.7 16.5 14.5 20" strokeLinecap="round" />
+          <path d="M15.5 8.5c1.8.2 3 1.5 3.7 3.5M15.3 13.4c2.1.5 3.2 2 3.7 4.6" strokeLinecap="round" />
+        </svg>
+      );
+    case 'production':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 ${glyphClass}`} fill="none" stroke="currentColor" strokeWidth="1.9">
+          <path d="M4 8.5 12 4l8 4.5v9L12 22l-8-4.5z" />
+          <path d="m12 4 8 4.5M12 13.5V22M4 8.5l8 5 8-5" strokeLinecap="round" />
+        </svg>
+      );
+    case 'delivery':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 ${glyphClass}`} fill="none" stroke="currentColor" strokeWidth="1.9">
+          <path d="M3 17h12l4-4-4-4H3z" />
+          <circle cx="8" cy="17" r="1.8" />
+          <circle cx="17" cy="17" r="1.8" />
+          <path d="M3 9h5l2-3h4" strokeLinecap="round" />
+        </svg>
+      );
+    case 'operations':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className={`h-5 w-5 ${glyphClass}`} fill="none" stroke="currentColor" strokeWidth="1.9">
+          <path d="M4 7h16M4 12h10M4 17h16" strokeLinecap="round" />
+          <circle cx="15.5" cy="12" r="1.5" />
+          <circle cx="9.5" cy="17" r="1.5" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
+
 function LoginScreen({
   username,
   password,
@@ -1545,37 +2863,79 @@ function LoginScreen({
   onSubmit: () => void;
 }) {
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(255,210,172,.35),_transparent_28%),linear-gradient(180deg,#fff8f0_0%,#f6eadc_100%)] px-4 py-10 text-stone-900">
-      <div className="mx-auto flex min-h-[80vh] max-w-xl items-center">
-        <div className="w-full rounded-[2rem] border border-stone-200/70 bg-white/90 p-8 shadow-[0_24px_80px_rgba(87,50,20,.12)]">
-          <div className="text-xs font-black uppercase tracking-[0.24em] text-orange-700">
-            Aeden Bakes super admin
-          </div>
-          <h1 className="mt-3 text-4xl font-black tracking-tight text-stone-950">Sign in</h1>
-          <p className="mt-2 text-sm leading-6 text-stone-600">
-            Use a role account to open the operations console.
-          </p>
-          <div className="mt-6 grid gap-4">
-            <Field label="Username" value={username} onChange={onUsernameChange} />
-            <Field label="Password" value={password} onChange={onPasswordChange} type="password" />
-            {error ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
-                {error}
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(217,119,6,.14),transparent_26%),radial-gradient(circle_at_bottom_right,rgba(124,63,18,.10),transparent_28%),linear-gradient(180deg,#fcf7f0_0%,#f6eadc_100%)] px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
+      <div className="mx-auto grid min-h-[calc(100vh-3rem)] max-w-7xl overflow-hidden rounded-[2.25rem] border border-slate-200/80 bg-white/70 shadow-[0_30px_100px_rgba(36,18,7,.14)] backdrop-blur xl:grid-cols-[1.08fr_.92fr]">
+        <section className="relative overflow-hidden bg-[linear-gradient(135deg,#241207_0%,#7c3f12_52%,#d97706_100%)] px-6 py-8 text-white sm:px-8 sm:py-10 lg:px-10">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,.14),transparent_28%),linear-gradient(180deg,rgba(255,255,255,.06),transparent_45%)]" />
+          <div className="relative flex h-full flex-col justify-between">
+            <div className="space-y-10">
+              <div className="flex items-center gap-4">
+                <BrandMark />
+                <div>
+                  <div className="text-2xl font-black tracking-tight">Aeden Bakes</div>
+                  <div className="text-sm text-slate-300">Super-admin portal</div>
+                </div>
               </div>
-            ) : null}
-            <button
-              type="button"
-              onClick={onSubmit}
-              className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white"
-            >
-              Sign in
-            </button>
-            <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-600">
-              Demo accounts: owner / owner123, manager / manager123, production / production123,
-              delivery / delivery123, accounts / accounts123, support / support123
+
+              <div className="max-w-2xl space-y-6">
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-[0.68rem] font-black uppercase tracking-[0.26em] text-amber-100">
+                  Operations command center
+                </div>
+                <h1 className="text-4xl font-black tracking-tight sm:text-5xl lg:text-6xl">
+                  Run the bakery like an enterprise network, not a consumer dashboard.
+                </h1>
+                <p className="max-w-xl text-base leading-7 text-slate-200/90">
+                  Watch every account, route, approval, and production line in one high-trust workspace
+                  built for super-admins.
+                </p>
+              </div>
+            </div>
+
+            <div className="relative mt-10 grid gap-3 text-sm text-slate-100 sm:grid-cols-2 xl:grid-cols-1">
+              {[
+                'Live customer drill-down with 360 context',
+                'Production, delivery, and receivables in one view',
+                'Audit-ready actions with approvals and ERP sync',
+              ].map((item) => (
+                <div key={item} className="flex items-center gap-3 rounded-[1.25rem] border border-white/10 bg-white/8 px-4 py-3 backdrop-blur">
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
+                  <span>{item}</span>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
+        </section>
+
+        <section className="flex items-center px-6 py-8 sm:px-8 sm:py-10 lg:px-10">
+          <div className="w-full max-w-lg">
+            <div className="space-y-2">
+              <h2 className="text-4xl font-black tracking-tight text-slate-950">Sign in</h2>
+              <p className="text-sm leading-6 text-slate-500">Enter a role account to open the operations console.</p>
+            </div>
+            <div className="mt-8 grid gap-4">
+              <Field label="Username" value={username} onChange={onUsernameChange} />
+              <Field label="Password" value={password} onChange={onPasswordChange} type="password" />
+              {error ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                  {error}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                onClick={onSubmit}
+                className="h-12 rounded-full bg-slate-950 px-5 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(36,18,7,.22)] transition hover:-translate-y-0.5"
+              >
+                Sign in
+              </button>
+              {SHOW_DEMO_ACCESS ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                  Demo accounts: owner / owner123, manager / manager123, production / production123,
+                  delivery / delivery123, accounts / accounts123, support / support123
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   );
@@ -1583,8 +2943,8 @@ function LoginScreen({
 
 function LoadingScreen({ message }: { message: string }) {
   return (
-    <main className="grid min-h-screen place-items-center bg-[linear-gradient(180deg,#fff8f0_0%,#f6eadc_100%)] text-stone-700">
-      <div className="rounded-2xl border border-stone-200 bg-white px-6 py-4 shadow">
+    <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_top_left,rgba(217,119,6,.14),transparent_26%),linear-gradient(180deg,#fcf7f0_0%,#f6eadc_100%)] text-slate-700">
+      <div className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold shadow-[0_16px_32px_rgba(36,18,7,.08)]">
         {message}
       </div>
     </main>
@@ -1606,13 +2966,13 @@ function Field({
 }) {
   return (
     <label className="grid gap-2">
-      <span className="text-xs font-black uppercase tracking-[0.18em] text-stone-500">{label}</span>
+      <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">{label}</span>
       <input
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none focus:border-orange-500"
+        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none shadow-[0_10px_24px_rgba(36,18,7,.04)] transition placeholder:text-slate-400 focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
       />
     </label>
   );
@@ -1628,7 +2988,7 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-[2rem] border border-stone-200/70 bg-white/80 p-6 shadow-[0_24px_80px_rgba(87,50,20,.1)]">
+    <div className="rounded-[2rem] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(36,18,7,.08)]">
       <SectionTitle title={title} subtitle={subtitle} />
       <div className="mt-5">{children}</div>
     </div>
@@ -1636,14 +2996,14 @@ function Card({
 }
 
 function GateMessage({ message }: { message: string }) {
-  return <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-600">{message}</div>;
+  return <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">{message}</div>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl bg-white/10 p-3">
-      <div className="text-xs uppercase tracking-[0.18em] text-stone-300">{label}</div>
-      <div className="mt-1 text-lg font-extrabold">{value}</div>
+    <div className="rounded-[1.35rem] border border-white/15 bg-white/10 p-4 shadow-[0_16px_40px_rgba(36,18,7,.14)] backdrop-blur-md">
+      <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-200">{label}</div>
+      <div className="mt-2 text-2xl font-black text-white">{value}</div>
     </div>
   );
 }
@@ -1651,8 +3011,8 @@ function Metric({ label, value }: { label: string; value: string }) {
 function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div className="space-y-1">
-      <h2 className="text-2xl font-black tracking-tight text-stone-950">{title}</h2>
-      <p className="text-sm leading-6 text-stone-600">{subtitle}</p>
+      <h2 className="text-2xl font-black tracking-tight text-slate-950">{title}</h2>
+      <p className="text-sm leading-6 text-slate-500">{subtitle}</p>
     </div>
   );
 }
@@ -1660,8 +3020,8 @@ function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) 
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-xs uppercase tracking-[0.18em] text-stone-400">{label}</div>
-      <div className="mt-1 font-bold text-stone-900">{value}</div>
+      <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{label}</div>
+      <div className="mt-1 font-bold text-slate-900">{value}</div>
     </div>
   );
 }
@@ -1683,8 +3043,8 @@ function StatusRow({
         : 'bg-rose-100 text-rose-900';
 
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm">
-      <span className="font-semibold text-stone-700">{label}</span>
+    <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+      <span className="font-semibold text-slate-700">{label}</span>
       <span className={`rounded-full px-3 py-1 text-xs font-black ${toneClass}`}>{value}</span>
     </div>
   );
@@ -1704,9 +3064,12 @@ function ActionButton({
       type="button"
       disabled={!enabled}
       onClick={onClick}
-      className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-left text-sm font-semibold text-stone-900 transition hover:-translate-y-0.5 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
+      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-semibold text-slate-900 shadow-[0_10px_24px_rgba(36,18,7,.04)] transition hover:-translate-y-0.5 hover:border-amber-300 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
     >
       {enabled ? label : `${label} (blocked by role)`}
     </button>
   );
 }
+
+
+

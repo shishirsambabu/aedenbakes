@@ -30,6 +30,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  aeden_brand:
+    path: ../../../packages/aeden_brand
   http: ^1.2.2
   shared_preferences: ^2.3.2
 

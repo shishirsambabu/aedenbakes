@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+.dart_tool/
+.next/
+.turbo/
+**/build/
+**/.dart_tool/
+**/.next/
+**/.turbo/
+*.tsbuildinfo
+*.log
+

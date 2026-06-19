@@ -1,0 +1,23 @@
+{
+  "name": "@aeden-bakes/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node --enable-source-maps dist/server.js",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aeden-bakes/shared": "file:../../packages/shared",
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.2",
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

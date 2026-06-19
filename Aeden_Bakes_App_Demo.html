@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aeden Bakes — Product Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --cream:#FAF7F2; --ink:#1C1917; --grey:#57534E; --line:#E7E5E4;
+  --amber:#B45309; --amber-bright:#D97706; --amber-soft:#FEF3E2;
+  --green:#15803D; --green-soft:#ECFDF3; --red:#B91C1C; --red-soft:#FEF2F2;
+  --card:#FFFFFF; --radius:16px;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{
+  font-family:'Inter',system-ui,sans-serif;
+  background:radial-gradient(1200px 800px at 70% -10%, #3a2d22 0%, #241D18 55%, #1a1411 100%);
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  color:#E7E0D8;overflow:hidden;
+}
+/* ---------- SHELL ---------- */
+.shell-top{display:flex;flex-direction:column;align-items:center;gap:14px;margin-bottom:18px}
+.shell-brand{display:flex;align-items:center;gap:10px;letter-spacing:.22em;font-size:11px;font-weight:600;color:#C7B9A8;text-transform:uppercase}
+.shell-brand .dot{width:6px;height:6px;border-radius:50%;background:var(--amber-bright)}
+.mode-switch{display:flex;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:99px;padding:4px}
+.mode-switch button{
+  border:0;background:transparent;color:#C7B9A8;font-family:inherit;font-size:13px;font-weight:600;
+  padding:9px 22px;border-radius:99px;cursor:pointer;transition:all .25s;
+}
+.mode-switch button.on{background:var(--amber-bright);color:#fff;box-shadow:0 4px 14px rgba(217,119,6,.35)}
+.stage{transform-origin:top center}
+/* ---------- PHONE ---------- */
+.phone{
+  width:390px;height:844px;background:#0d0a08;border-radius:54px;padding:12px;
+  box-shadow:0 40px 90px rgba(0,0,0,.6), inset 0 0 0 2px #2c241d;position:relative;
+}
+.notch{position:absolute;top:24px;left:50%;transform:translateX(-50%);width:120px;height:30px;background:#0d0a08;border-radius:20px;z-index:60}
+.screen-wrap{width:100%;height:100%;background:var(--cream);border-radius:42px;overflow:hidden;position:relative;color:var(--ink)}
+.app{position:absolute;inset:0;display:none;flex-direction:column}
+.app.on{display:flex}
+.screen{position:absolute;inset:0;display:none;flex-direction:column;background:var(--cream);animation:fadeIn .28s ease}
+.screen.on{display:flex}
+@keyframes fadeIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+.scroll{flex:1;overflow-y:auto;scrollbar-width:none}
+.scroll::-webkit-scrollbar{display:none}
+/* ---------- CUSTOMER HEADER ---------- */
+.c-head{padding:54px 18px 12px;background:var(--cream);position:relative;z-index:5}
+.deliver{display:flex;justify-content:space-between;align-items:center}
+.deliver .to{font-size:11px;color:var(--grey);font-weight:600;text-transform:uppercase;letter-spacing:.08em}
+.deliver .name{font-size:16px;font-weight:700;margin-top:2px}
+.avatar{width:38px;height:38px;border-radius:12px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.daychips{display:flex;gap:8px;margin-top:14px}
+.daychip{flex:1;text-align:center;padding:9px 0;border-radius:12px;border:1.5px solid var(--line);background:#fff;font-size:12.5px;font-weight:600;color:var(--grey);cursor:pointer;transition:all .2s}
+.daychip small{display:block;font-size:10px;font-weight:500;color:#A8A29E;margin-top:1px}
+.daychip.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.daychip.on small{color:#D6CDC2}
+.search{margin-top:12px;display:flex;align-items:center;gap:9px;background:#fff;border:1.5px solid var(--line);border-radius:14px;padding:11px 14px;color:#A8A29E;font-size:13.5px}
+.cats{display:flex;gap:8px;overflow-x:auto;padding:12px 18px 4px;scrollbar-width:none}
+.cats::-webkit-scrollbar{display:none}
+.cat{white-space:nowrap;padding:7px 14px;border-radius:99px;background:#fff;border:1.5px solid var(--line);font-size:12px;font-weight:600;color:var(--grey);cursor:pointer}
+.cat.on{background:var(--amber-soft);border-color:var(--amber);color:var(--amber)}
+/* ---------- PRODUCT GRID ---------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px 18px 120px}
+.pcard{background:var(--card);border-radius:var(--radius);border:1px solid var(--line);overflow:hidden;cursor:pointer;display:flex;flex-direction:column;transition:transform .15s}
+.pcard:active{transform:scale(.97)}
+.pimg{height:104px;display:flex;align-items:center;justify-content:center;font-size:44px;position:relative}
+.pcard.soldout .pimg,.pcard.soldout .pbody{opacity:.45;filter:grayscale(.6)}
+.left-badge{position:absolute;top:8px;left:8px;background:var(--amber-soft);color:var(--amber);font-size:9.5px;font-weight:700;padding:3px 7px;border-radius:7px;border:1px solid #F5D9B8}
+.left-badge.low{background:var(--red-soft);color:var(--red);border-color:#F5C6C6}
+.left-badge.out{background:#F5F5F4;color:#78716C;border-color:var(--line)}
+.pbody{padding:10px 11px 11px;display:flex;flex-direction:column;gap:3px;flex:1}
+.pname{font-size:12.5px;font-weight:700;line-height:1.25}
+.ppack{font-size:10.5px;color:var(--grey)}
+.cutoff{font-size:9.5px;color:#92400E;background:var(--amber-soft);align-self:flex-start;padding:2px 6px;border-radius:5px;font-weight:600;margin-top:2px}
+.prow{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:7px}
+.price{font-size:13.5px;font-weight:800}
+.addbtn{border:1.5px solid var(--amber);color:var(--amber);background:#fff;font-family:inherit;font-weight:800;font-size:11px;padding:6px 13px;border-radius:9px;cursor:pointer;letter-spacing:.04em}
+.stepper{display:flex;align-items:center;background:var(--amber);border-radius:9px;color:#fff;font-weight:700}
+.stepper button{border:0;background:transparent;color:#fff;width:25px;height:27px;font-size:15px;cursor:pointer;font-family:inherit}
+.stepper span{min-width:16px;text-align:center;font-size:12px}
+/* ---------- FLOATING CART ---------- */
+.cartbar{
+  position:absolute;left:16px;right:16px;bottom:86px;background:var(--ink);color:#fff;border-radius:16px;
+  padding:13px 16px;display:none;justify-content:space-between;align-items:center;cursor:pointer;
+  box-shadow:0 12px 30px rgba(28,25,23,.35);z-index:30;animation:slideUp .3s ease;
+}
+.cartbar.show{display:flex}
+@keyframes slideUp{from{transform:translateY(16px);opacity:0}to{transform:none;opacity:1}}
+.cartbar .l{font-size:12px;color:#D6CDC2}
+.cartbar .l b{display:block;color:#fff;font-size:14px;margin-top:1px}
+.cartbar .go{font-size:13px;font-weight:700;color:#FBBF77}
+/* ---------- BOTTOM NAV ---------- */
+.bnav{display:flex;background:#fff;border-top:1px solid var(--line);padding:10px 6px 26px;z-index:20}
+.bnav button{flex:1;border:0;background:transparent;font-family:inherit;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;font-weight:600;color:#A8A29E;cursor:pointer}
+.bnav button .ic{font-size:19px;line-height:1}
+.bnav button.on{color:var(--amber)}
+/* ---------- GENERIC SUB-SCREEN ---------- */
+.sub-head{display:flex;align-items:center;gap:12px;padding:56px 18px 14px;background:var(--cream)}
+.back{width:36px;height:36px;border-radius:12px;border:1.5px solid var(--line);background:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.sub-title{font-size:17px;font-weight:800}
+.section-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--grey);padding:14px 18px 8px}
+/* ---------- CART ---------- */
+.citem{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:11px 12px;margin:0 18px 9px}
+.citem .em{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:24px}
+.citem .inf{flex:1}
+.citem .inf b{font-size:13px;display:block}
+.citem .inf span{font-size:11px;color:var(--grey)}
+.citem .amt{font-size:13px;font-weight:800;margin-left:4px}
+.datestrip{display:flex;gap:8px;overflow-x:auto;padding:4px 18px 6px;scrollbar-width:none}
+.datestrip::-webkit-scrollbar{display:none}
+.dchip{min-width:56px;text-align:center;border:1.5px solid var(--line);background:#fff;border-radius:13px;padding:9px 4px;cursor:pointer}
+.dchip .dw{font-size:10px;font-weight:600;color:var(--grey);text-transform:uppercase}
+.dchip .dn{font-size:16px;font-weight:800;margin-top:1px}
+.dchip.on{background:var(--ink);border-color:var(--ink)}
+.dchip.on .dw{color:#D6CDC2}.dchip.on .dn{color:#fff}
+.dchip.dis{opacity:.35;pointer-events:none}
+.slots{display:flex;flex-direction:column;gap:8px;padding:4px 18px}
+.slot{display:flex;justify-content:space-between;align-items:center;background:#fff;border:1.5px solid var(--line);border-radius:13px;padding:12px 14px;cursor:pointer}
+.slot b{font-size:13px}
+.slot .cap{font-size:10.5px;font-weight:700;color:var(--green);background:var(--green-soft);padding:3px 8px;border-radius:7px}
+.slot .cap.low{color:var(--amber);background:var(--amber-soft)}
+.slot.full{opacity:.45;pointer-events:none}
+.slot.full .cap{color:#78716C;background:#F5F5F4}
+.slot.on{border-color:var(--amber);background:var(--amber-soft)}
+.summary{margin:10px 18px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.srow{display:flex;justify-content:space-between;font-size:12.5px;color:var(--grey);padding:3px 0}
+.srow.total{font-size:14.5px;font-weight:800;color:var(--ink);border-top:1px dashed var(--line);margin-top:7px;padding-top:9px}
+.cta-dock{padding:12px 18px 30px;background:linear-gradient(transparent,var(--cream) 30%)}
+.cta{width:100%;border:0;background:var(--amber);color:#fff;font-family:inherit;font-size:15px;font-weight:800;padding:16px;border-radius:15px;cursor:pointer;box-shadow:0 10px 24px rgba(180,83,9,.3)}
+.cta:disabled{background:#D6D3D1;box-shadow:none;cursor:not-allowed}
+/* ---------- CHECKOUT ---------- */
+.paycard{margin:0 18px 10px;background:#fff;border:1.5px solid var(--line);border-radius:15px;padding:14px 15px;cursor:pointer;transition:all .15s}
+.paycard.on{border-color:var(--amber);background:var(--amber-soft)}
+.paycard.blocked{border-color:#F5C6C6;background:var(--red-soft);cursor:not-allowed}
+.pc-top{display:flex;align-items:center;gap:10px}
+.radio{width:18px;height:18px;border-radius:50%;border:2px solid #D6D3D1;flex-shrink:0}
+.paycard.on .radio{border-color:var(--amber);box-shadow:inset 0 0 0 4.5px var(--amber)}
+.pc-top b{font-size:14px}
+.pc-top .tag{margin-left:auto;font-size:10px;font-weight:700;padding:3px 8px;border-radius:7px}
+.pc-sub{font-size:11.5px;color:var(--grey);margin:6px 0 0 28px;line-height:1.5}
+.partopts{display:flex;gap:8px;margin:10px 0 2px 28px}
+.popt{border:1.5px solid var(--line);background:#fff;border-radius:9px;font-family:inherit;font-size:12px;font-weight:700;padding:7px 14px;cursor:pointer;color:var(--grey)}
+.popt.on{border-color:var(--amber);color:var(--amber);background:#fff}
+.credit-meter{margin:10px 0 2px 28px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.cm-row{display:flex;justify-content:space-between;font-size:11px;color:var(--grey);padding:2px 0}
+.cm-row b{color:var(--ink)}
+.cm-bar{height:6px;background:#F0EDE8;border-radius:99px;margin:7px 0 3px;overflow:hidden}
+.cm-bar i{display:block;height:100%;background:var(--amber);border-radius:99px}
+/* ---------- SUCCESS ---------- */
+.success{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 36px;gap:8px}
+.bigcheck{width:84px;height:84px;border-radius:50%;background:var(--green-soft);color:var(--green);display:flex;align-items:center;justify-content:center;font-size:40px;margin-bottom:8px;animation:pop .4s cubic-bezier(.3,1.6,.5,1)}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:none;opacity:1}}
+.success h2{font-size:20px;font-weight:800}
+.success p{font-size:13px;color:var(--grey);line-height:1.6}
+.oid{background:#fff;border:1px dashed var(--line);border-radius:12px;padding:10px 18px;font-size:13px;font-weight:700;margin-top:6px}
+/* ---------- ORDERS ---------- */
+.ocard{background:#fff;border:1px solid var(--line);border-radius:15px;margin:0 18px 10px;padding:14px 15px}
+.o-top{display:flex;justify-content:space-between;align-items:center}
+.o-top b{font-size:13.5px}
+.status{font-size:10px;font-weight:700;padding:4px 9px;border-radius:8px}
+.st-del{background:var(--green-soft);color:var(--green)}
+.st-out{background:var(--amber-soft);color:var(--amber)}
+.st-prod{background:#EFF6FF;color:#1D4ED8}
+.o-meta{font-size:11.5px;color:var(--grey);margin-top:4px}
+.o-items{font-size:12px;color:var(--grey);margin-top:8px;line-height:1.6;border-top:1px dashed var(--line);padding-top:8px}
+.o-actions{display:flex;gap:8px;margin-top:11px}
+.ghost{flex:1;border:1.5px solid var(--line);background:#fff;border-radius:10px;font-family:inherit;font-size:11.5px;font-weight:700;padding:9px 0;cursor:pointer;color:var(--ink)}
+.ghost.primary{border-color:var(--amber);color:var(--amber)}
+/* ---------- LEDGER ---------- */
+.ledger-hero{margin:6px 18px 12px;background:var(--ink);border-radius:18px;padding:18px;color:#fff}
+.ledger-hero .lab{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#C7B9A8}
+.ledger-hero .amt{font-size:28px;font-weight:800;margin:4px 0 2px}
+.ledger-hero .due{font-size:11.5px;color:#FBBF77;font-weight:600}
+.aging{display:flex;gap:6px;margin:0 18px 6px}
+.age{flex:1;background:#fff;border:1px solid var(--line);border-radius:12px;padding:9px 8px;text-align:center}
+.age .v{font-size:12.5px;font-weight:800}
+.age .k{font-size:9px;color:var(--grey);font-weight:600;margin-top:2px;text-transform:uppercase;letter-spacing:.03em}
+.age.hot{background:var(--red-soft);border-color:#F5C6C6}
+.age.hot .v{color:var(--red)}
+.txn{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-radius:13px;margin:0 18px 8px;padding:12px 14px}
+.txn .ic{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.txn .inf{flex:1}
+.txn .inf b{font-size:12.5px;display:block}
+.txn .inf span{font-size:10.5px;color:var(--grey)}
+.txn .v{font-size:13px;font-weight:800}
+.txn .v.neg{color:var(--green)}
+/* ---------- ACCOUNT ---------- */
+.acct-card{margin:6px 18px 12px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+.acct-card h3{font-size:15px}
+.acct-card p{font-size:11.5px;color:var(--grey);margin-top:3px;line-height:1.6}
+.kv{display:flex;justify-content:space-between;font-size:12px;padding:7px 0;border-bottom:1px dashed var(--line)}
+.kv:last-child{border:0}
+.kv span{color:var(--grey)}.kv b{font-weight:700}
+/* ---------- PRODUCT SHEET ---------- */
+.sheet-veil{position:absolute;inset:0;background:rgba(28,25,23,.45);z-index:40;display:none;align-items:flex-end}
+.sheet-veil.show{display:flex}
+.sheet{width:100%;background:var(--cream);border-radius:26px 26px 0 0;padding:10px 20px 30px;animation:sheetUp .3s ease}
+@keyframes sheetUp{from{transform:translateY(60px);opacity:.4}to{transform:none;opacity:1}}
+.grab{width:40px;height:4px;border-radius:99px;background:#D6D3D1;margin:4px auto 14px}
+.sheet .bigimg{height:130px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:64px;margin-bottom:14px}
+.sheet h3{font-size:18px;font-weight:800}
+.sheet .pk{font-size:12px;color:var(--grey);margin-top:2px}
+.sheet .desc{font-size:12.5px;color:var(--grey);line-height:1.65;margin-top:10px}
+.contract{display:flex;justify-content:space-between;align-items:center;background:var(--amber-soft);border:1px solid #F5D9B8;border-radius:12px;padding:11px 14px;margin-top:13px}
+.contract span{font-size:11px;font-weight:700;color:#92400E}
+.contract b{font-size:17px;font-weight:800}
+.sheet .cta{margin-top:14px}
+/* ---------- TOAST ---------- */
+.toast{position:absolute;left:50%;bottom:150px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;font-size:12px;font-weight:600;padding:11px 18px;border-radius:12px;opacity:0;transition:all .3s;z-index:80;pointer-events:none;white-space:nowrap}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* ============ ADMIN ============ */
+.a-head{background:var(--ink);color:#fff;padding:56px 18px 16px}
+.a-head .row{display:flex;justify-content:space-between;align-items:center}
+.a-head h1{font-size:17px;font-weight:800}
+.a-head .sub{font-size:11px;color:#C7B9A8;margin-top:2px}
+.a-badge{font-size:10px;font-weight:700;background:rgba(251,191,119,.16);color:#FBBF77;padding:4px 10px;border-radius:8px;letter-spacing:.06em}
+.a-days{display:flex;gap:8px;margin-top:14px}
+.a-day{flex:1;text-align:center;border:1.5px solid rgba(255,255,255,.18);border-radius:11px;padding:8px 0;font-size:12px;font-weight:600;color:#C7B9A8;cursor:pointer}
+.a-day.on{background:var(--amber-bright);border-color:var(--amber-bright);color:#fff}
+.a-stats{display:flex;gap:8px;padding:14px 18px 4px}
+.stat{flex:1;background:#fff;border:1px solid var(--line);border-radius:13px;padding:11px 12px}
+.stat .v{font-size:16px;font-weight:800}
+.stat .k{font-size:9.5px;color:var(--grey);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
+.prow-admin{background:#fff;border:1px solid var(--line);border-radius:14px;margin:0 18px 9px;padding:12px 14px}
+.pa-top{display:flex;align-items:center;gap:11px}
+.pa-top .em{font-size:22px}
+.pa-top .nm{flex:1}
+.pa-top .nm b{font-size:13px;display:block}
+.pa-top .nm span{font-size:10.5px;color:var(--grey)}
+.toggle{width:44px;height:25px;border-radius:99px;background:#D6D3D1;position:relative;cursor:pointer;transition:background .2s;flex-shrink:0}
+.toggle i{position:absolute;top:2.5px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.toggle.on{background:var(--green)}
+.toggle.on i{left:21px}
+.cap-line{display:flex;align-items:center;gap:10px;margin-top:10px}
+.capbar{flex:1;height:7px;background:#F0EDE8;border-radius:99px;overflow:hidden}
+.capbar i{display:block;height:100%;border-radius:99px;background:var(--green);transition:width .3s}
+.capbar i.warn{background:var(--amber-bright)}
+.capbar i.full{background:var(--red)}
+.cap-line .num{font-size:10.5px;font-weight:700;color:var(--grey);min-width:74px;text-align:right}
+.prow-admin.off .cap-line{opacity:.35}
+/* admin orders */
+.aorder{background:#fff;border:1px solid var(--line);border-radius:14px;margin:0 18px 9px;padding:13px 14px}
+.ao-top{display:flex;justify-content:space-between;align-items:center}
+.ao-top b{font-size:13px}
+.paychip{font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:7px}
+.py-paid{background:var(--green-soft);color:var(--green)}
+.py-part{background:var(--amber-soft);color:var(--amber)}
+.py-credit{background:#EFF6FF;color:#1D4ED8}
+.ao-meta{font-size:11px;color:var(--grey);margin-top:3px}
+.ao-items{font-size:11.5px;color:var(--grey);border-top:1px dashed var(--line);margin-top:9px;padding-top:8px;line-height:1.6}
+.ao-actions{display:flex;gap:8px;margin-top:10px}
+.approve{flex:1;border:0;background:var(--ink);color:#fff;font-family:inherit;font-size:11.5px;font-weight:700;padding:9px 0;border-radius:10px;cursor:pointer}
+.approve.done{background:var(--green-soft);color:var(--green);pointer-events:none}
+/* production sheet */
+.psheet{margin:0 18px 10px;background:#fff;border:1px solid var(--line);border-radius:15px;overflow:hidden}
+.ps-row{display:flex;align-items:center;padding:11px 14px;border-bottom:1px solid #F4F1EC;font-size:12px}
+.ps-row:last-child{border:0}
+.ps-row.h{background:#FAF7F2;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--grey)}
+.ps-row .c1{flex:1.6;font-weight:600}
+.ps-row .c2{flex:.7;text-align:center;font-weight:800}
+.ps-row .c3{flex:1.4;text-align:right;color:var(--grey);font-size:10.5px}
+/* receivables */
+.rec-cust{display:flex;align-items:center;gap:11px;background:#fff;border:1px solid var(--line);border-radius:14px;margin:0 18px 8px;padding:12px 13px}
+.rec-cust .init{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0}
+.rec-cust .inf{flex:1}
+.rec-cust .inf b{font-size:12.5px;display:block}
+.rec-cust .inf span{font-size:10px;font-weight:600}
+.rec-cust .amt{font-size:13px;font-weight:800;margin-right:2px}
+.wa{border:1.5px solid var(--green);color:var(--green);background:#fff;border-radius:9px;font-family:inherit;font-size:10px;font-weight:700;padding:6px 9px;cursor:pointer}
+/* admin tabs */
+.atabs{display:flex;background:#fff;border-top:1px solid var(--line);padding:10px 6px 26px}
+.atabs button{flex:1;border:0;background:transparent;font-family:inherit;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;font-weight:600;color:#A8A29E;cursor:pointer}
+.atabs button .ic{font-size:18px;line-height:1}
+.atabs button.on{color:var(--amber)}
+.shell-note{margin-top:16px;font-size:11px;color:#8a7c6c;letter-spacing:.03em}
+</style>
+</head>
+<body>
+
+<div class="shell-top">
+  <div class="shell-brand"><span class="dot"></span> Aeden Bakes · Product Demo <span class="dot"></span></div>
+  <div class="mode-switch">
+    <button id="btnCust" class="on" onclick="setMode('cust')">Customer App</button>
+    <button id="btnAdmin" onclick="setMode('admin')">Admin Panel</button>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+<div class="phone">
+  <div class="notch"></div>
+  <div class="screen-wrap">
+
+  <!-- ================= CUSTOMER APP ================= -->
+  <div class="app on" id="appCust">
+
+    <!-- HOME -->
+    <div class="screen on" id="sc-home">
+      <div class="c-head">
+        <div class="deliver">
+          <div>
+            <div class="to">Delivering to</div>
+            <div class="name">Hotel Crescent, Kochi 🏨</div>
+          </div>
+          <div class="avatar" onclick="go('sc-account')">HC</div>
+        </div>
+        <div class="daychips" id="daychips"></div>
+        <div class="search">🔍 &nbsp;Search breads, croissants, buns…</div>
+      </div>
+      <div class="cats" id="cats"></div>
+      <div class="scroll"><div class="grid" id="grid"></div></div>
+      <div class="cartbar" id="cartbar" onclick="go('sc-cart')">
+        <div class="l"><span id="cb-count">0 items</span><b id="cb-total">₹0</b></div>
+        <div class="go">View cart →</div>
+      </div>
+      <div class="bnav" id="bnav"></div>
+    </div>
+
+    <!-- CART -->
+    <div class="screen" id="sc-cart">
+      <div class="sub-head"><button class="back" onclick="go('sc-home')">←</button><div class="sub-title">Cart &amp; Delivery</div></div>
+      <div class="scroll">
+        <div class="section-label">Your items</div>
+        <div id="cart-items"></div>
+        <div class="section-label">Delivery date</div>
+        <div class="datestrip" id="datestrip"></div>
+        <div class="section-label">Delivery slot</div>
+        <div class="slots" id="slots"></div>
+        <div class="section-label">Order summary</div>
+        <div class="summary" id="cart-summary"></div>
+        <div style="height:16px"></div>
+      </div>
+      <div class="cta-dock"><button class="cta" id="toPay" onclick="goCheckout()">Continue to payment →</button></div>
+    </div>
+
+    <!-- CHECKOUT -->
+    <div class="screen" id="sc-pay">
+      <div class="sub-head"><button class="back" onclick="go('sc-cart')">←</button><div class="sub-title">Payment</div></div>
+      <div class="scroll">
+        <div class="section-label">Choose how to pay</div>
+        <div id="paycards"></div>
+        <div class="section-label">Payment summary</div>
+        <div class="summary" id="pay-summary"></div>
+        <div style="height:16px"></div>
+      </div>
+      <div class="cta-dock"><button class="cta" id="placeBtn" onclick="placeOrder()">Place order</button></div>
+    </div>
+
+    <!-- SUCCESS -->
+    <div class="screen" id="sc-done">
+      <div class="success">
+        <div class="bigcheck">✓</div>
+        <h2>Order confirmed!</h2>
+        <p id="done-sub">Your order is in tomorrow's production plan.<br>We'll notify you on WhatsApp at every step.</p>
+        <div class="oid" id="done-id">ORD-2418</div>
+        <button class="cta" style="margin-top:22px" onclick="go('sc-orders');setNav(1)">Track order</button>
+        <button class="ghost" style="width:100%;margin-top:10px;padding:13px" onclick="go('sc-home');setNav(0)">Back to home</button>
+      </div>
+    </div>
+
+    <!-- ORDERS -->
+    <div class="screen" id="sc-orders">
+      <div class="sub-head" style="padding-left:18px"><div class="sub-title">Your orders</div></div>
+      <div class="scroll" style="padding-bottom:110px"><div id="orders-list"></div></div>
+      <div class="bnav" id="bnav2"></div>
+    </div>
+
+    <!-- LEDGER -->
+    <div class="screen" id="sc-ledger">
+      <div class="sub-head" style="padding-left:18px"><div class="sub-title">Credit ledger</div></div>
+      <div class="scroll" style="padding-bottom:110px">
+        <div class="ledger-hero">
+          <div class="lab">Outstanding balance</div>
+          <div class="amt">₹18,500</div>
+          <div class="due">Next due: ₹9,300 on 14 Jun · Credit period 15 days</div>
+        </div>
+        <div class="aging">
+          <div class="age"><div class="v">₹9,300</div><div class="k">0–7 days</div></div>
+          <div class="age"><div class="v">₹9,200</div><div class="k">8–15 days</div></div>
+          <div class="age"><div class="v">₹0</div><div class="k">15–30 days</div></div>
+          <div class="age"><div class="v">₹0</div><div class="k">Overdue</div></div>
+        </div>
+        <div class="section-label">Recent activity</div>
+        <div class="txn"><div class="ic" style="background:#EFF6FF">🧾</div><div class="inf"><b>Invoice INV-1188</b><span>8 Jun · Due 18 Jun</span></div><div class="v">₹9,200</div></div>
+        <div class="txn"><div class="ic" style="background:#EFF6FF">🧾</div><div class="inf"><b>Invoice INV-1175</b><span>4 Jun · Due 14 Jun</span></div><div class="v">₹9,300</div></div>
+        <div class="txn"><div class="ic" style="background:var(--green-soft)">💳</div><div class="inf"><b>Payment received</b><span>5 Jun · UPI · Razorpay</span></div><div class="v neg">− ₹12,000</div></div>
+        <div class="txn"><div class="ic" style="background:var(--amber-soft)">↩️</div><div class="inf"><b>Credit note CN-204</b><span>2 Jun · Shortage: 2 × Baguette</span></div><div class="v neg">− ₹450</div></div>
+        <div style="padding:8px 18px"><button class="cta" onclick="toast('Razorpay payment link sent on WhatsApp')">Pay outstanding ₹18,500</button></div>
+      </div>
+      <div class="bnav" id="bnav3"></div>
+    </div>
+
+    <!-- ACCOUNT -->
+    <div class="screen" id="sc-account">
+      <div class="sub-head" style="padding-left:18px"><div class="sub-title">Account</div></div>
+      <div class="scroll" style="padding-bottom:110px">
+        <div class="acct-card">
+          <h3>Hotel Crescent 🏨</h3>
+          <p>GSTIN 32AAACH1234F1Z9 · Marine Drive, Kochi<br>Buyer since Jan 2026 · Price tier: <b style="color:var(--amber)">Contract A</b></p>
+        </div>
+        <div class="section-label">Credit terms</div>
+        <div class="acct-card">
+          <div class="kv"><span>Credit limit</span><b>₹50,000</b></div>
+          <div class="kv"><span>Credit period</span><b>15 days</b></div>
+          <div class="kv"><span>Outstanding</span><b>₹18,500</b></div>
+          <div class="kv"><span>Available credit</span><b style="color:var(--green)">₹31,500</b></div>
+        </div>
+        <div class="section-label">Standing order</div>
+        <div class="acct-card">
+          <div class="kv"><span>Mon–Sat · 6–8 AM</span><b>40 × Sandwich Loaf</b></div>
+          <div class="kv"><span>Skip / edit before</span><b>6:00 PM daily</b></div>
+        </div>
+      </div>
+      <div class="bnav" id="bnav4"></div>
+    </div>
+
+    <!-- PRODUCT SHEET -->
+    <div class="sheet-veil" id="veil" onclick="if(event.target===this)closeSheet()">
+      <div class="sheet" id="sheet"></div>
+    </div>
+
+  </div>
+
+  <!-- ================= ADMIN ================= -->
+  <div class="app" id="appAdmin">
+
+    <!-- BOARD -->
+    <div class="screen on" id="ad-board">
+      <div class="a-head">
+        <div class="row">
+          <div><h1>Production board</h1><div class="sub">Aeden Bakes · Admin</div></div>
+          <div class="a-badge">OWNER</div>
+        </div>
+        <div class="a-days">
+          <div class="a-day" onclick="toast('Showing today — Thu 11 Jun')">Today · 11 Jun</div>
+          <div class="a-day on">Tomorrow · 12 Jun</div>
+        </div>
+      </div>
+      <div class="a-stats">
+        <div class="stat"><div class="v" id="st-orders">23</div><div class="k">Orders booked</div></div>
+        <div class="stat"><div class="v" id="st-units">612</div><div class="k">Units to bake</div></div>
+        <div class="stat"><div class="v">₹71,840</div><div class="k">Order value</div></div>
+      </div>
+      <div class="section-label">Products · tomorrow</div>
+      <div class="scroll" style="padding-bottom:110px"><div id="admin-products"></div></div>
+      <div class="atabs" id="atabs1"></div>
+    </div>
+
+    <!-- ORDERS -->
+    <div class="screen" id="ad-orders">
+      <div class="a-head"><div class="row"><div><h1>Incoming orders</h1><div class="sub">Tomorrow · Fri 12 Jun</div></div><div class="a-badge">23 NEW</div></div></div>
+      <div class="scroll" style="padding:14px 0 110px"><div id="admin-orders"></div></div>
+      <div class="atabs" id="atabs2"></div>
+    </div>
+
+    <!-- PRODUCTION -->
+    <div class="screen" id="ad-prod">
+      <div class="a-head"><div class="row"><div><h1>Production sheet</h1><div class="sub">Auto-generated from 23 confirmed orders</div></div></div></div>
+      <div class="scroll" style="padding:14px 0 110px">
+        <div class="psheet">
+          <div class="ps-row h"><div class="c1">Product</div><div class="c2">Qty</div><div class="c3">By slot</div></div>
+          <div class="ps-row"><div class="c1">🍞 Sourdough Loaf</div><div class="c2">96</div><div class="c3">6–8 AM: 64 · 8–10 AM: 32</div></div>
+          <div class="ps-row"><div class="c1">🍞 Multigrain Loaf</div><div class="c2">118</div><div class="c3">6–8 AM: 90 · 8–10: 28</div></div>
+          <div class="ps-row"><div class="c1">🥐 Butter Croissant</div><div class="c2">52 bx</div><div class="c3">6–8 AM: 40 · 8–10: 12</div></div>
+          <div class="ps-row"><div class="c1">🍔 Brioche Burger Buns</div><div class="c2">121 pk</div><div class="c3">8–10 AM: 85 · 4–6 PM: 36</div></div>
+          <div class="ps-row"><div class="c1">🥖 Baguette</div><div class="c2">74</div><div class="c3">6–8 AM: 74</div></div>
+          <div class="ps-row"><div class="c1">🥯 Pav Buns</div><div class="c2">96 pk</div><div class="c3">6–8 AM: 60 · 8–10: 36</div></div>
+          <div class="ps-row"><div class="c1">🍪 Choco-chip Cookies</div><div class="c2">14 tubs</div><div class="c3">4–6 PM: 14</div></div>
+          <div class="ps-row"><div class="c1">🍰 Plum Cake Slab</div><div class="c2">9</div><div class="c3">4–6 PM: 9</div></div>
+        </div>
+        <div style="padding:4px 18px"><button class="cta" onclick="toast('Production sheet sent to bakery printer 🖨️')">Print for bakery floor</button></div>
+      </div>
+      <div class="atabs" id="atabs3"></div>
+    </div>
+
+    <!-- RECEIVABLES -->
+    <div class="screen" id="ad-rec">
+      <div class="a-head">
+        <div class="row"><div><h1>Receivables</h1><div class="sub">Live across 38 credit accounts</div></div></div>
+      </div>
+      <div class="scroll" style="padding-bottom:110px">
+        <div class="ledger-hero" style="margin-top:14px">
+          <div class="lab">Total outstanding</div>
+          <div class="amt">₹2,84,300</div>
+          <div class="due">₹1,40,600 overdue · 2 accounts auto-blocked from ordering</div>
+        </div>
+        <div class="aging">
+          <div class="age"><div class="v">₹83,400</div><div class="k">0–7 d</div></div>
+          <div class="age"><div class="v">₹60,300</div><div class="k">8–15 d</div></div>
+          <div class="age hot"><div class="v">₹86,400</div><div class="k">15–30 d</div></div>
+          <div class="age hot"><div class="v">₹54,200</div><div class="k">Overdue</div></div>
+        </div>
+        <div class="section-label">Follow up today</div>
+        <div id="rec-list"></div>
+      </div>
+      <div class="atabs" id="atabs4"></div>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast">Done</div>
+  </div>
+</div>
+</div>
+
+<div class="shell-note">Interactive concept demo · iOS &amp; Android · Built for Aeden Bakes</div>
+
+<script>
+/* ============ DATA ============ */
+const PRODUCTS = [
+ {id:1, name:'Sourdough Loaf 800g', cat:'Breads', pack:'Per loaf', price:165, emoji:'🍞', bg:'#FDF0DF', cap:120, booked:88, cutoff:'6:00 PM', desc:'Naturally leavened, 24-hour cold ferment. Holds structure for sandwiches and toast service through the day.'},
+ {id:2, name:'Multigrain Sandwich Loaf', cat:'Breads', pack:'Per loaf · sliced', price:140, emoji:'🍞', bg:'#F3EBDD', cap:150, booked:64, cutoff:'6:00 PM', desc:'Seven-grain sandwich loaf, machine-sliced to 12 mm. The workhorse for café and room-service menus.'},
+ {id:3, name:'Butter Croissant', cat:'Croissants & Danish', pack:'Box of 12', price:540, emoji:'🥐', bg:'#FBEAD2', cap:60, booked:52, cutoff:'4:00 PM', desc:'27 laminated layers, pure butter. Bakes fresh between 4–6 AM for first delivery slot.'},
+ {id:4, name:'Danish Assortment', cat:'Croissants & Danish', pack:'Box of 12', price:620, emoji:'🧁', bg:'#FBE3E0', cap:40, booked:40, cutoff:'4:00 PM', desc:'Mixed box — apricot, custard, cinnamon swirl, raspberry cream cheese.'},
+ {id:5, name:'Brioche Burger Buns', cat:'Buns', pack:'Pack of 24', price:380, emoji:'🍔', bg:'#FCEFD7', cap:200, booked:121, cutoff:'6:00 PM', desc:'4.5-inch glazed brioche buns. Soft crumb, sturdy base — built for double patties.'},
+ {id:6, name:'Baguette', cat:'Breads', pack:'Per piece', price:95, emoji:'🥖', bg:'#F5ECDD', cap:90, booked:30, cutoff:'6:00 PM', desc:'Classic 55 cm baguette, crisp crust. Best in the 6–8 AM slot, same-morning bake.'},
+ {id:7, name:'Pav Buns', cat:'Buns', pack:'Pack of 30', price:160, emoji:'🥯', bg:'#F8EFE0', cap:250, booked:96, cutoff:'6:00 PM', desc:'Soft ladi pav, pull-apart pack of 30. High-volume staple for caterers.'},
+ {id:8, name:'Choco-chip Cookies 1kg', cat:'Cookies', pack:'1 kg tub', price:720, emoji:'🍪', bg:'#F2E6D8', cap:35, booked:12, cutoff:'2:00 PM', desc:'Chewy-centre cookies, approx. 38 per kg. Tub-packed for banquet and minibar use.'},
+ {id:9, name:'Plum Cake Slab', cat:'Cakes', pack:'2 kg slab', price:850, emoji:'🍰', bg:'#F6E4DC', cap:20, booked:9, cutoff:'2:00 PM', desc:'Rum-soaked fruit slab cake, portioned in-house to 40 slices. Banquet favourite.'},
+];
+const CATS = ['All','Breads','Croissants & Danish','Buns','Cookies','Cakes'];
+const SLOTS = [
+ {t:'6:00 – 8:00 AM', left:3},
+ {t:'8:00 – 10:00 AM', left:7},
+ {t:'4:00 – 6:00 PM', left:0},
+];
+const NAV = [['🏠','Home','sc-home'],['📦','Orders','sc-orders'],['📒','Ledger','sc-ledger'],['👤','Account','sc-account']];
+const ATABS = [['🗓️','Board','ad-board'],['🧾','Orders','ad-orders'],['👨‍🍳','Production','ad-prod'],['💰','Receivables','ad-rec']];
+
+let cart = {};            // id -> qty
+let cat = 'All';
+let dateIdx = 1;          // tomorrow
+let slotIdx = 0;
+let payMode = 'now';      // now | part | credit
+let partPct = 30;
+const CREDIT_LIMIT = 50000, CREDIT_OUT = 18500;
+let orderSeq = 2418;
+
+let ORDERS = [
+ {id:'ORD-2410', when:'For tomorrow · 6–8 AM', status:['In production','st-prod'], pay:'Credit · due 27 Jun', items:'40 × Multigrain Loaf · 2 bx Croissant', total:6680},
+ {id:'ORD-2402', when:'Today · 6–8 AM slot', status:['Out for delivery','st-out'], pay:'Part-paid · ₹1,420 on delivery', items:'24 pk Brioche Buns · 10 × Sourdough', total:4730},
+ {id:'ORD-2391', when:'Delivered Mon, 8 Jun · 7:12 AM', status:['Delivered','st-del'], pay:'Paid · Razorpay', items:'2 bx Croissant · 1 bx Danish · 30 × Baguette', total:4550},
+];
+
+/* ============ HELPERS ============ */
+const $ = id => document.getElementById(id);
+const inr = n => '₹' + n.toLocaleString('en-IN');
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._x); t._x=setTimeout(()=>t.classList.remove('show'),2100); }
+
+function go(id){
+  document.querySelectorAll('#appCust .screen').forEach(s=>s.classList.remove('on'));
+  $(id).classList.add('on');
+}
+function goAdmin(id){
+  document.querySelectorAll('#appAdmin .screen').forEach(s=>s.classList.remove('on'));
+  $(id).classList.add('on');
+}
+function setMode(m){
+  $('appCust').classList.toggle('on', m==='cust');
+  $('appAdmin').classList.toggle('on', m==='admin');
+  $('btnCust').classList.toggle('on', m==='cust');
+  $('btnAdmin').classList.toggle('on', m==='admin');
+}
+
+/* ============ NAV BARS ============ */
+function buildNavs(){
+  ['bnav','bnav2','bnav3','bnav4'].forEach((nid,scrIdx)=>{
+    const el=$(nid); if(!el) return; el.innerHTML='';
+    NAV.forEach((n,i)=>{
+      const b=document.createElement('button');
+      b.innerHTML=`<span class="ic">${n[0]}</span>${n[1]}`;
+      if(i===navIndexFor(nid)) b.classList.add('on');
+      b.onclick=()=>{ go(n[2]); setNav(i); };
+      el.appendChild(b);
+    });
+  });
+  ['atabs1','atabs2','atabs3','atabs4'].forEach((nid,idx)=>{
+    const el=$(nid); el.innerHTML='';
+    ATABS.forEach((n,i)=>{
+      const b=document.createElement('button');
+      b.innerHTML=`<span class="ic">${n[0]}</span>${n[1]}`;
+      if(i===idx) b.classList.add('on');
+      b.onclick=()=>goAdmin(n[2]);
+      el.appendChild(b);
+    });
+  });
+}
+function navIndexFor(nid){ return {bnav:0,bnav2:1,bnav3:2,bnav4:3}[nid]; }
+function setNav(i){ /* active state handled per-screen since each screen owns its bar */ }
+
+/* ============ HOME ============ */
+function buildDayChips(){
+  const days=[['Today','Thu 11'],['Tomorrow','Fri 12'],['Pick date','📅']];
+  $('daychips').innerHTML='';
+  days.forEach((d,i)=>{
+    const c=document.createElement('div');
+    c.className='daychip'+(i===dateIdx?' on':'');
+    c.innerHTML=`${d[0]}<small>${d[1]}</small>`;
+    c.onclick=()=>{ if(i===2){toast('Calendar picker opens here');return;} dateIdx=i; buildDayChips(); renderGrid(); };
+    $('daychips').appendChild(c);
+  });
+}
+function buildCats(){
+  $('cats').innerHTML='';
+  CATS.forEach(c=>{
+    const b=document.createElement('div');
+    b.className='cat'+(c===cat?' on':'');
+    b.textContent=c;
+    b.onclick=()=>{ cat=c; buildCats(); renderGrid(); };
+    $('cats').appendChild(b);
+  });
+}
+function renderGrid(){
+  const g=$('grid'); g.innerHTML='';
+  PRODUCTS.filter(p=>cat==='All'||p.cat===cat).forEach(p=>{
+    const remaining=p.cap-p.booked;
+    const sold=remaining<=0;
+    const card=document.createElement('div');
+    card.className='pcard'+(sold?' soldout':'');
+    const badge = sold
+      ? `<span class="left-badge out">Sold out for tomorrow</span>`
+      : `<span class="left-badge${remaining<=15?' low':''}">${remaining} left for tomorrow</span>`;
+    card.innerHTML=`
+      <div class="pimg" style="background:${p.bg}">${badge}${p.emoji}</div>
+      <div class="pbody">
+        <div class="pname">${p.name}</div>
+        <div class="ppack">${p.pack}</div>
+        <span class="cutoff">Order by ${p.cutoff}</span>
+        <div class="prow">
+          <div class="price">${inr(p.price)}</div>
+          <div class="addwrap" data-id="${p.id}"></div>
+        </div>
+      </div>`;
+    card.onclick=(e)=>{ if(e.target.closest('.addwrap')) return; if(!sold) openSheet(p); };
+    g.appendChild(card);
+    if(!sold) renderAdd(card.querySelector('.addwrap'), p.id);
+  });
+}
+function renderAdd(wrap,id){
+  const q=cart[id]||0;
+  if(q===0){
+    wrap.innerHTML=`<button class="addbtn">ADD</button>`;
+    wrap.querySelector('button').onclick=(e)=>{e.stopPropagation(); cart[id]=1; refreshCart();};
+  } else {
+    wrap.innerHTML=`<div class="stepper"><button>−</button><span>${q}</span><button>+</button></div>`;
+    const [m,pl]=wrap.querySelectorAll('button');
+    m.onclick=(e)=>{e.stopPropagation(); cart[id]--; if(cart[id]<=0)delete cart[id]; refreshCart();};
+    pl.onclick=(e)=>{e.stopPropagation(); cart[id]++; refreshCart();};
+  }
+}
+function cartTotals(){
+  let count=0, sub=0;
+  for(const id in cart){ const p=PRODUCTS.find(x=>x.id==id); count+=cart[id]; sub+=p.price*cart[id]; }
+  const gst=Math.round(sub*0.05), del=sub>0?(sub>3000?0:80):0;
+  return {count, sub, gst, del, total:sub+gst+del};
+}
+function refreshCart(){
+  renderGrid();
+  const t=cartTotals();
+  $('cartbar').classList.toggle('show', t.count>0);
+  $('cb-count').textContent=`${t.count} item${t.count!==1?'s':''}`;
+  $('cb-total').textContent=inr(t.total);
+  renderCartScreen();
+}
+
+/* ============ CART SCREEN ============ */
+function buildDateStrip(){
+  const days=[['Thu','11',true],['Fri','12'],['Sat','13'],['Sun','14'],['Mon','15'],['Tue','16'],['Wed','17']];
+  $('datestrip').innerHTML='';
+  days.forEach((d,i)=>{
+    const c=document.createElement('div');
+    c.className='dchip'+(i===1?' on':'')+(d[2]?' dis':'');
+    c.innerHTML=`<div class="dw">${d[0]}</div><div class="dn">${d[1]}</div>`;
+    c.onclick=()=>{ document.querySelectorAll('.dchip').forEach(x=>x.classList.remove('on')); c.classList.add('on'); toast('Catalog re-checked for '+d[0]+' '+d[1]+' Jun'); };
+    $('datestrip').appendChild(c);
+  });
+}
+function buildSlots(){
+  $('slots').innerHTML='';
+  SLOTS.forEach((s,i)=>{
+    const el=document.createElement('div');
+    const full=s.left<=0;
+    el.className='slot'+(full?' full':'')+(i===slotIdx&&!full?' on':'');
+    el.innerHTML=`<b>${s.t}</b><span class="cap${s.left<=3&&!full?' low':''}">${full?'Slot full':s.left+' slots left'}</span>`;
+    el.onclick=()=>{ slotIdx=i; buildSlots(); };
+    $('slots').appendChild(el);
+  });
+}
+function renderCartScreen(){
+  const wrap=$('cart-items'); wrap.innerHTML='';
+  const ids=Object.keys(cart);
+  if(ids.length===0){ wrap.innerHTML='<div style="padding:6px 18px;font-size:12.5px;color:var(--grey)">Your cart is empty — add items from the catalog.</div>'; }
+  ids.forEach(id=>{
+    const p=PRODUCTS.find(x=>x.id==id);
+    const row=document.createElement('div'); row.className='citem';
+    row.innerHTML=`<div class="em" style="background:${p.bg}">${p.emoji}</div>
+      <div class="inf"><b>${p.name}</b><span>${p.pack} · ${inr(p.price)}</span></div>
+      <div class="addwrap" data-id="${p.id}"></div><div class="amt">${inr(p.price*cart[id])}</div>`;
+    wrap.appendChild(row);
+    renderAdd(row.querySelector('.addwrap'), p.id);
+  });
+  const t=cartTotals();
+  $('cart-summary').innerHTML=`
+    <div class="srow"><span>Subtotal</span><span>${inr(t.sub)}</span></div>
+    <div class="srow"><span>GST (5%)</span><span>${inr(t.gst)}</span></div>
+    <div class="srow"><span>Delivery</span><span>${t.del===0?'FREE':inr(t.del)}</span></div>
+    <div class="srow total"><span>Total</span><span>${inr(t.total)}</span></div>`;
+  $('toPay').disabled = t.count===0;
+}
+
+/* ============ CHECKOUT ============ */
+function goCheckout(){ payMode='now'; partPct=30; renderPay(); go('sc-pay'); }
+function renderPay(){
+  const t=cartTotals();
+  const avail=CREDIT_LIMIT-CREDIT_OUT;
+  const creditBlocked = t.total>avail;
+  const pc=$('paycards'); pc.innerHTML='';
+
+  // Pay now
+  pc.appendChild(payCard('now','Pay now','Full amount via UPI, card or netbanking — Razorpay secure checkout.',
+    `<span class="tag" style="background:var(--green-soft);color:var(--green)">Recommended</span>`));
+
+  // Part pay
+  const part=payCard('part','Part payment',`Pay an advance now, balance on delivery.`,
+    `<span class="tag" style="background:var(--amber-soft);color:var(--amber)">Flexible</span>`);
+  if(payMode==='part'){
+    const opts=document.createElement('div'); opts.className='partopts';
+    [30,50].forEach(p=>{
+      const b=document.createElement('button'); b.className='popt'+(p===partPct?' on':''); b.textContent=p+'% now';
+      b.onclick=(e)=>{e.stopPropagation(); partPct=p; renderPay();};
+      opts.appendChild(b);
+    });
+    part.appendChild(opts);
+    const note=document.createElement('div'); note.className='pc-sub';
+    note.innerHTML=`Pay <b>${inr(Math.round(t.total*partPct/100))}</b> now · <b>${inr(t.total-Math.round(t.total*partPct/100))}</b> on delivery`;
+    part.appendChild(note);
+  }
+  pc.appendChild(part);
+
+  // Credit
+  const credit=payCard('credit', creditBlocked?'Credit — limit exceeded':'Buy on credit',
+    creditBlocked
+      ? `This order (${inr(t.total)}) exceeds your available credit. Pay part now or clear outstanding — or ask Aeden Bakes for a limit review.`
+      : `Invoice now, pay within your approved period. Due date auto-set to 15 days.`,
+    `<span class="tag" style="background:#EFF6FF;color:#1D4ED8">15-day terms</span>`, creditBlocked);
+  const meter=document.createElement('div'); meter.className='credit-meter';
+  meter.innerHTML=`
+    <div class="cm-row"><span>Credit limit</span><b>${inr(CREDIT_LIMIT)}</b></div>
+    <div class="cm-row"><span>Outstanding</span><b>${inr(CREDIT_OUT)}</b></div>
+    <div class="cm-bar"><i style="width:${Math.min(100,Math.round((CREDIT_OUT+(payMode==='credit'?t.total:0))/CREDIT_LIMIT*100))}%"></i></div>
+    <div class="cm-row"><span>Available after this order</span><b style="color:${creditBlocked?'var(--red)':'var(--green)'}">${inr(Math.max(0,avail-t.total))}</b></div>`;
+  credit.appendChild(meter);
+  pc.appendChild(credit);
+
+  // summary
+  let lines='';
+  if(payMode==='now'){ lines=`<div class="srow"><span>Paying now (Razorpay)</span><span>${inr(t.total)}</span></div>`; }
+  else if(payMode==='part'){
+    const adv=Math.round(t.total*partPct/100);
+    lines=`<div class="srow"><span>Advance now (${partPct}%)</span><span>${inr(adv)}</span></div>
+           <div class="srow"><span>Balance on delivery</span><span>${inr(t.total-adv)}</span></div>`;
+  } else {
+    lines=`<div class="srow"><span>On credit · due 27 Jun</span><span>${inr(t.total)}</span></div>
+           <div class="srow"><span>Payable now</span><span>₹0</span></div>`;
+  }
+  $('pay-summary').innerHTML=`
+    <div class="srow"><span>Order total</span><span>${inr(t.total)}</span></div>${lines}
+    <div class="srow total"><span>${payMode==='credit'?'Invoice amount':'Pay now'}</span>
+    <span>${payMode==='now'?inr(t.total):payMode==='part'?inr(Math.round(t.total*partPct/100)):inr(t.total)}</span></div>`;
+  $('placeBtn').textContent = payMode==='now' ? `Pay ${inr(t.total)} · Place order`
+    : payMode==='part' ? `Pay ${inr(Math.round(t.total*partPct/100))} advance · Place order`
+    : `Place order on credit`;
+}
+function payCard(mode,title,sub,tag,blocked){
+  const d=document.createElement('div');
+  d.className='paycard'+(payMode===mode?' on':'')+(blocked?' blocked':'');
+  d.innerHTML=`<div class="pc-top"><div class="radio"></div><b>${title}</b>${tag||''}</div><div class="pc-sub">${sub}</div>`;
+  if(!blocked) d.onclick=()=>{ payMode=mode; renderPay(); };
+  else d.onclick=()=>toast('Credit unavailable for this amount');
+  return d;
+}
+function placeOrder(){
+  const t=cartTotals();
+  if(t.count===0) return;
+  orderSeq++;
+  const id='ORD-'+orderSeq;
+  const payTxt = payMode==='now' ? 'Paid · Razorpay' : payMode==='part' ? `Part-paid · ${inr(t.total-Math.round(t.total*partPct/100))} on delivery` : 'Credit · due 27 Jun';
+  const itemTxt = Object.keys(cart).map(i=>{const p=PRODUCTS.find(x=>x.id==i);return cart[i]+' × '+p.name;}).join(' · ');
+  ORDERS.unshift({id, when:'For tomorrow · '+SLOTS[slotIdx].t, status:['In production','st-prod'], pay:payTxt, items:itemTxt, total:t.total});
+  $('done-id').textContent=id;
+  $('done-sub').innerHTML = `Delivery tomorrow, ${SLOTS[slotIdx].t}.<br>${payMode==='credit'?'Invoice added to your ledger — due 27 Jun.':'Payment confirmed — invoice on WhatsApp.'}`;
+  cart={}; refreshCart(); renderOrders();
+  go('sc-done');
+}
+
+/* ============ ORDERS ============ */
+function renderOrders(){
+  const w=$('orders-list'); w.innerHTML='';
+  ORDERS.forEach(o=>{
+    const d=document.createElement('div'); d.className='ocard';
+    d.innerHTML=`
+      <div class="o-top"><b>${o.id}</b><span class="status ${o.status[1]}">${o.status[0]}</span></div>
+      <div class="o-meta">${o.when} · ${o.pay}</div>
+      <div class="o-items">${o.items}<br><b style="color:var(--ink)">${inr(o.total)}</b></div>
+      <div class="o-actions">
+        <button class="ghost primary">↻ &nbsp;Repeat order</button>
+        <button class="ghost">GST invoice ⤓</button>
+      </div>`;
+    const [rep,invc]=d.querySelectorAll('button');
+    rep.onclick=()=>{ cart={3:1,1:4}; refreshCart(); go('sc-cart'); toast('Items added back to cart'); };
+    invc.onclick=()=>toast('Invoice PDF downloaded');
+    w.appendChild(d);
+  });
+}
+
+/* ============ PRODUCT SHEET ============ */
+function openSheet(p){
+  $('sheet').innerHTML=`
+    <div class="grab"></div>
+    <div class="bigimg" style="background:${p.bg}">${p.emoji}</div>
+    <h3>${p.name}</h3><div class="pk">${p.pack} · Order by ${p.cutoff} for next-day</div>
+    <div class="desc">${p.desc}</div>
+    <div class="contract"><span>YOUR CONTRACT PRICE · TIER A</span><b>${inr(p.price)}</b></div>
+    <button class="cta">Add to cart · ${inr(p.price)}</button>`;
+  $('sheet').querySelector('.cta').onclick=()=>{ cart[p.id]=(cart[p.id]||0)+1; refreshCart(); closeSheet(); toast('Added to cart'); };
+  $('veil').classList.add('show');
+}
+function closeSheet(){ $('veil').classList.remove('show'); }
+
+/* ============ ADMIN ============ */
+function renderAdminProducts(){
+  const w=$('admin-products'); w.innerHTML='';
+  PRODUCTS.forEach(p=>{
+    const pct=Math.min(100,Math.round(p.booked/p.cap*100));
+    const cls=pct>=100?'full':pct>=75?'warn':'';
+    const d=document.createElement('div'); d.className='prow-admin'+(p.off?' off':'');
+    d.innerHTML=`
+      <div class="pa-top">
+        <div class="em">${p.emoji}</div>
+        <div class="nm"><b>${p.name}</b><span>${p.pack} · capacity ${p.cap}/day</span></div>
+        <div class="toggle ${p.off?'':'on'}"><i></i></div>
+      </div>
+      <div class="cap-line">
+        <div class="capbar"><i class="${cls}" style="width:${p.off?0:pct}%"></i></div>
+        <div class="num">${p.off?'OFF for 12 Jun':`booked ${p.booked} / ${p.cap}`}</div>
+      </div>`;
+    d.querySelector('.toggle').onclick=()=>{ p.off=!p.off; renderAdminProducts(); toast(p.off?`${p.name} switched OFF for tomorrow`:`${p.name} back ON — customers can order`); };
+    w.appendChild(d);
+  });
+}
+const AORDERS=[
+ {c:'Hotel Crescent', id:'ORD-2410', slot:'6–8 AM', pay:['Credit','py-credit'], items:'40 × Multigrain Loaf · 2 bx Butter Croissant', total:6680},
+ {c:'Café Mariner', id:'ORD-2412', slot:'6–8 AM', pay:['Paid','py-paid'], items:'24 × Sourdough · 12 × Baguette · 1 tub Cookies', total:6220},
+ {c:'Zaitoon Caterers', id:'ORD-2414', slot:'8–10 AM', pay:['Part-paid 30%','py-part'], items:'60 pk Pav Buns · 30 pk Brioche Buns', total:21000},
+ {c:'Daily Dough Retail', id:'ORD-2416', slot:'8–10 AM', pay:['Paid','py-paid'], items:'30 × Multigrain · 20 × Sourdough · 4 × Plum Cake', total:11000},
+];
+function renderAdminOrders(){
+  const w=$('admin-orders'); w.innerHTML='';
+  AORDERS.forEach(o=>{
+    const d=document.createElement('div'); d.className='aorder';
+    d.innerHTML=`
+      <div class="ao-top"><b>${o.c}</b><span class="paychip ${o.pay[1]}">${o.pay[0]}</span></div>
+      <div class="ao-meta">${o.id} · Tomorrow · ${o.slot} slot</div>
+      <div class="ao-items">${o.items}<br><b style="color:var(--ink)">${inr(o.total)}</b></div>
+      <div class="ao-actions"><button class="approve">Approve</button><button class="ghost" style="flex:.6">Modify</button></div>`;
+    const [ap,md]=d.querySelectorAll('button');
+    ap.onclick=()=>{ ap.textContent='✓ Approved'; ap.classList.add('done'); toast('Order approved — added to production sheet'); };
+    md.onclick=()=>toast('Order edit opens here');
+    w.appendChild(d);
+  });
+}
+const RECS=[
+ {c:'Zaitoon Caterers', amt:86400, st:'18 days overdue · ordering blocked', hot:true, ini:'ZC', bg:'#FEF2F2', col:'#B91C1C'},
+ {c:'Café Mariner', amt:54200, st:'5 days overdue', hot:true, ini:'CM', bg:'#FEF2F2', col:'#B91C1C'},
+ {c:'Daily Dough Retail', amt:41800, st:'Due in 3 days', ini:'DD', bg:'#FEF3E2', col:'#B45309'},
+ {c:'Hotel Crescent', amt:18500, st:'Current · due 14 Jun', ini:'HC', bg:'#ECFDF3', col:'#15803D'},
+ {c:'Greenleaf Resorts', amt:83400, st:'Current · due 19 Jun', ini:'GR', bg:'#ECFDF3', col:'#15803D'},
+];
+function renderRecs(){
+  const w=$('rec-list'); w.innerHTML='';
+  RECS.forEach(r=>{
+    const d=document.createElement('div'); d.className='rec-cust';
+    d.innerHTML=`
+      <div class="init" style="background:${r.bg};color:${r.col}">${r.ini}</div>
+      <div class="inf"><b>${r.c}</b><span style="color:${r.col}">${r.st}</span></div>
+      <div class="amt">${inr(r.amt)}</div>
+      <button class="wa">Remind 💬</button>`;
+    d.querySelector('.wa').onclick=()=>toast(`WhatsApp reminder sent to ${r.c}`);
+    w.appendChild(d);
+  });
+}
+
+/* ============ SCALE TO FIT ============ */
+function fit(){
+  const h=window.innerHeight, need=844+170;
+  const s=Math.min(1,(h-150)/844);
+  $('stage').style.transform=`scale(${s})`;
+  $('stage').style.marginBottom = s<1 ? `-${(1-s)*844}px` : '0';
+}
+window.addEventListener('resize',fit);
+
+/* ============ INIT ============ */
+buildNavs(); buildDayChips(); buildCats(); renderGrid();
+buildDateStrip(); buildSlots(); renderCartScreen(); renderOrders();
+renderAdminProducts(); renderAdminOrders(); renderRecs(); fit();
+</script>
+</body>
+</html>

@@ -1308,6 +1308,34 @@ export default function Home() {
     await refreshAppState();
   }
 
+  async function generateReport(reportId: string) {
+    if (!token) {
+      return;
+    }
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/${reportId}/generate`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    });
+    if (!response.ok) {
+      throw new Error('Could not generate report.');
+    }
+    await refreshAppState();
+  }
+
+  async function deliverReport(reportId: string) {
+    if (!token) {
+      return;
+    }
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/${reportId}/deliver`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    });
+    if (!response.ok) {
+      throw new Error('Could not deliver report.');
+    }
+    await refreshAppState();
+  }
+
   async function exportCustomerIntelligence(customerId: string) {
     if (!token) {
       return;
@@ -4162,7 +4190,7 @@ export default function Home() {
                         </button>
                       </div>
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
-                        {appState.reportExports.slice(0, 2).map((report) => (
+                        {appState.reportExports.slice(0, 4).map((report) => (
                           <button
                             key={report.id}
                             type="button"
@@ -4183,9 +4211,29 @@ export default function Home() {
                                 target="_blank"
                                 rel="noreferrer"
                                 className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
+                                >
+                                  Download
+                                </a>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  generateReport(report.id).catch((error) => setError((error as Error).message));
+                                }}
+                                className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
                               >
-                                Download
-                              </a>
+                                Generate
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  deliverReport(report.id).catch((error) => setError((error as Error).message));
+                                }}
+                                className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
+                              >
+                                Deliver
+                              </button>
                             </div>
                           </button>
                         ))}

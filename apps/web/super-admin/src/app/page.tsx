@@ -556,6 +556,20 @@ type AnalyticsSnapshotPayload = {
       highValueCustomers: number;
       watchCustomers: number;
     };
+    definitions: Array<{
+      code: string;
+      name: string;
+      description: string;
+      active: boolean;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+    memberships: Array<{
+      id: string;
+      segmentCode: string;
+      customerId: string;
+      createdAt: string;
+    }>;
     topCustomers: Array<{
       customerId: string;
       customerName: string;
@@ -3626,10 +3640,10 @@ export default function Home() {
                     <InfoBlock label="Watch customers" value={`${analyticsPayload.credit.buckets.watch + analyticsPayload.credit.buckets.blockSoon + analyticsPayload.credit.buckets.blocked}`} />
                   </div>
 
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <div className="rounded-3xl bg-stone-950 p-5 text-stone-50 shadow-xl shadow-stone-200">
-                      <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Top customers</div>
-                      <div className="mt-4 space-y-3">
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-3xl bg-stone-950 p-5 text-stone-50 shadow-xl shadow-stone-200">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Top customers</div>
+                    <div className="mt-4 space-y-3">
                         {analyticsPayload.customers.topCustomers.length > 0 ? (
                           analyticsPayload.customers.topCustomers.map((customer) => (
                             <div key={customer.customerId} className="rounded-2xl bg-white/10 px-4 py-3">
@@ -3652,6 +3666,27 @@ export default function Home() {
                         ) : (
                           <GateMessage message="No customer activity yet." />
                         )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Customer segments</div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <InfoBlock label="Repeat" value={`${analyticsPayload.customers.segments.repeatCustomers}`} />
+                        <InfoBlock label="High value" value={`${analyticsPayload.customers.segments.highValueCustomers}`} />
+                        <InfoBlock label="Dormant" value={`${analyticsPayload.customers.segments.dormantCustomers}`} />
+                        <InfoBlock label="Watch" value={`${analyticsPayload.customers.segments.watchCustomers}`} />
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {analyticsPayload.customers.definitions.map((segment) => (
+                          <div key={segment.code} className="rounded-2xl bg-white px-4 py-3 text-sm">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-semibold text-stone-950">{segment.name}</div>
+                              <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{segment.active ? 'active' : 'paused'}</div>
+                            </div>
+                            <div className="mt-1 text-xs text-stone-500">{segment.description}</div>
+                          </div>
+                        ))}
                       </div>
                     </div>
 

@@ -337,6 +337,22 @@ type AnalyticsSnapshot = {
   createdAt: string;
 };
 
+type SegmentDefinition = {
+  code: string;
+  name: string;
+  description: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SegmentMembership = {
+  id: string;
+  segmentCode: string;
+  customerId: string;
+  createdAt: string;
+};
+
 type KpiRollup = {
   id: string;
   metricCode: string;
@@ -456,6 +472,8 @@ type ApiStateSnapshot = {
   alertEvents: AlertEvent[];
   analyticsSnapshots: AnalyticsSnapshot[];
   kpiRollups: KpiRollup[];
+  segmentDefinitions: SegmentDefinition[];
+  segmentMemberships: SegmentMembership[];
   customerRequests: CustomerRequest[];
   savedAddresses: SavedAddress[];
   reportExports: ReportExport[];
@@ -942,6 +960,41 @@ let alertRules: AlertRule[] = [
 let alertEvents: AlertEvent[] = [];
 let analyticsSnapshots: AnalyticsSnapshot[] = [];
 let kpiRollups: KpiRollup[] = [];
+let segmentDefinitions: SegmentDefinition[] = [
+  {
+    code: 'repeat_customers',
+    name: 'Repeat customers',
+    description: 'Accounts with more than one non-cancelled order.',
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    code: 'high_value_customers',
+    name: 'High value customers',
+    description: 'Accounts with revenue at or above the high-value threshold.',
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    code: 'watch_customers',
+    name: 'Watch customers',
+    description: 'Accounts currently on watch, block soon, or blocked.',
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    code: 'dormant_customers',
+    name: 'Dormant customers',
+    description: 'Accounts with no recent order activity.',
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+let segmentMemberships: SegmentMembership[] = [];
 let customerRequests: CustomerRequest[] = [];
 let savedAddresses: SavedAddress[] = [
   {
@@ -4976,6 +5029,8 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
       status: snapshot.status ?? 'ready',
     })),
     kpiRollups: parsed.kpiRollups ?? kpiRollups,
+    segmentDefinitions: parsed.segmentDefinitions ?? segmentDefinitions,
+    segmentMemberships: parsed.segmentMemberships ?? segmentMemberships,
     customerRequests: parsed.customerRequests ?? customerRequests,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
@@ -5061,6 +5116,8 @@ async function persistState() {
     alertEvents,
     analyticsSnapshots,
     kpiRollups,
+    segmentDefinitions,
+    segmentMemberships,
     customerRequests,
     savedAddresses,
     reportExports,
@@ -5166,6 +5223,8 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   alertEvents.splice(0, alertEvents.length, ...snapshot.alertEvents);
   analyticsSnapshots.splice(0, analyticsSnapshots.length, ...snapshot.analyticsSnapshots);
   kpiRollups.splice(0, kpiRollups.length, ...snapshot.kpiRollups);
+  segmentDefinitions.splice(0, segmentDefinitions.length, ...snapshot.segmentDefinitions);
+  segmentMemberships.splice(0, segmentMemberships.length, ...snapshot.segmentMemberships);
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
@@ -5501,6 +5560,67 @@ function refreshPhase3DerivedState() {
     watchCustomers,
   };
 
+  const segmentMembershipEntries: SegmentMembership[] = [];
+  for (const customer of customers) {
+    const orderCount = customerOrderCounts.get(customer.id) ?? 0;
+    const revenue = customerRevenue.get(customer.id) ?? 0;
+    const segmentCodes = [
+      orderCount > 1 ? 'repeat_customers' : null,
+      revenue >= 10000 ? 'high_value_customers' : null,
+      orderCount === 0 ? 'dormant_customers' : null,
+      ['watch', 'block_soon', 'blocked'].includes(customer.riskState) ? 'watch_customers' : null,
+    ].filter((entry): entry is string => Boolean(entry));
+
+    for (const segmentCode of segmentCodes) {
+      segmentMembershipEntries.push({
+        id: `segment_${segmentCode}_${customer.id}`,
+        segmentCode,
+        customerId: customer.id,
+        createdAt: now,
+      });
+    }
+  }
+
+  segmentDefinitions.splice(
+    0,
+    segmentDefinitions.length,
+    ...[
+      {
+        code: 'repeat_customers',
+        name: 'Repeat customers',
+        description: 'Accounts with more than one non-cancelled order.',
+        active: true,
+        createdAt: segmentDefinitions[0]?.createdAt ?? now,
+        updatedAt: now,
+      },
+      {
+        code: 'high_value_customers',
+        name: 'High value customers',
+        description: 'Accounts with revenue at or above the high-value threshold.',
+        active: true,
+        createdAt: segmentDefinitions[1]?.createdAt ?? now,
+        updatedAt: now,
+      },
+      {
+        code: 'watch_customers',
+        name: 'Watch customers',
+        description: 'Accounts currently on watch, block soon, or blocked.',
+        active: true,
+        createdAt: segmentDefinitions[2]?.createdAt ?? now,
+        updatedAt: now,
+      },
+      {
+        code: 'dormant_customers',
+        name: 'Dormant customers',
+        description: 'Accounts with no recent order activity.',
+        active: true,
+        createdAt: segmentDefinitions[3]?.createdAt ?? now,
+        updatedAt: now,
+      },
+    ],
+  );
+  segmentMemberships.splice(0, segmentMemberships.length, ...segmentMembershipEntries);
+
   const branchPerformance = customerBranches
     .map((branch) => {
       const orderCount = branchOrderCounts.get(branch.id) ?? 0;
@@ -5569,6 +5689,8 @@ function refreshPhase3DerivedState() {
     },
     customers: {
       segments: customerSegments,
+      definitions: segmentDefinitions,
+      memberships: segmentMemberships,
       topCustomers,
     },
     branches: {

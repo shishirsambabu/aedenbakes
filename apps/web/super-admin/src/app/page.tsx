@@ -1305,6 +1305,64 @@ export default function Home() {
     await refreshAppState();
   }
 
+  async function exportCustomerIntelligence(customerId: string) {
+    if (!token) {
+      return;
+    }
+    const customer = customers.find((entry) => entry.id === customerId);
+    const selected = selectedCustomer?.customer.id === customerId ? selectedCustomer : null;
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/export`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        reportCode: `customer_intelligence_${customerId}`,
+        payloadJson: {
+          customerId,
+          customerName: customer?.name ?? customerId,
+          analytics: selected?.analytics ?? null,
+          orders: selected?.orders ?? [],
+          branches: selected?.branches ?? [],
+          supportCases: selected?.supportCases ?? [],
+          standingOrders: selected?.standingOrders ?? [],
+        },
+      }),
+    });
+    if (!response.ok) {
+      throw new Error('Could not export customer intelligence.');
+    }
+    await refreshAppState();
+  }
+
+  async function exportBranchIntelligence(branchId: string) {
+    if (!token) {
+      return;
+    }
+    const branch = analyticsPayload?.branches.performance.find((entry) => entry.branchId === branchId) ?? null;
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/export`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        reportCode: `branch_intelligence_${branchId}`,
+        payloadJson: {
+          branchId,
+          branch,
+          recentOrders: selectedBranchOrders,
+          branchCustomer: selectedBranchCustomer,
+        },
+      }),
+    });
+    if (!response.ok) {
+      throw new Error('Could not export branch intelligence.');
+    }
+    await refreshAppState();
+  }
+
   async function generateLatestReport() {
     if (!token || appState.reportExports.length === 0) {
       return;
@@ -2177,12 +2235,25 @@ export default function Home() {
                               />
                             </div>
                             <div className="mt-4 text-sm text-stone-300">
-                              Segments: {(selectedCustomer.analytics?.segments ?? []).join(', ') || 'none'}
-                            </div>
-                            <div className="mt-1 text-xs text-stone-400">
-                              Last order: {selectedCustomer.analytics?.lastOrderAt ?? 'No orders yet'}
-                            </div>
+                            Segments: {(selectedCustomer.analytics?.segments ?? []).join(', ') || 'none'}
                           </div>
+                          <div className="mt-1 text-xs text-stone-400">
+                            Last order: {selectedCustomer.analytics?.lastOrderAt ?? 'No orders yet'}
+                          </div>
+                          <div className="mt-4 flex flex-wrap gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                exportCustomerIntelligence(selectedCustomer.customer.id).catch((error) =>
+                                  setError((error as Error).message),
+                                );
+                              }}
+                              className="rounded-full bg-amber-400 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-stone-950"
+                            >
+                              Export customer report
+                            </button>
+                          </div>
+                        </div>
 
                           <div className="space-y-3">
                             <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Branches</div>
@@ -3870,6 +3941,19 @@ export default function Home() {
                             Customer: {selectedBranchCustomer?.name ?? selectedBranchMetric.customerId}
                             <br />
                             Zone: {selectedBranchCustomer?.deliveryZone ?? 'Unknown'} | Status: {selectedBranchMetric.status}
+                          </div>
+                          <div className="flex flex-wrap gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                exportBranchIntelligence(selectedBranchMetric.branchId).catch((error) =>
+                                  setError((error as Error).message),
+                                );
+                              }}
+                              className="rounded-full bg-amber-400 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-stone-950"
+                            >
+                              Export branch report
+                            </button>
                           </div>
                           <div className="space-y-2">
                             <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-300">Recent orders</div>

@@ -3206,8 +3206,11 @@ app.get('/reports', authenticate, requireAnyRole(['owner', 'manager', 'accounts'
 });
 
 app.post('/reports/export', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
-  const { reportCode = 'operations_overview' } = req.body as { reportCode?: string };
-  const payload = {
+  const { reportCode = 'operations_overview', payloadJson = null } = req.body as {
+    reportCode?: string;
+    payloadJson?: Record<string, unknown> | null;
+  };
+  const payload = payloadJson ?? {
     customers: customers.length,
     orders: orders.length,
     supportCases: supportCases.length,

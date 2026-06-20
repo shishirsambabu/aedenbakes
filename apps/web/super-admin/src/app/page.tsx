@@ -813,6 +813,7 @@ export default function Home() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppState>(initialAppState);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer360Response | null>(null);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [supportCaseDraft, setSupportCaseDraft] = useState('');
   const [supportNoteDraft, setSupportNoteDraft] = useState('');
   const [standingOrderCustomerId, setStandingOrderCustomerId] = useState('cust_cafe_nook');
@@ -1198,6 +1199,10 @@ export default function Home() {
   const analyticsPayload = analytics.insights;
   const latestEvents = auditEvents.slice(0, 4);
   const selectedCustomerOrders = selectedCustomer?.orders ?? [];
+  const selectedBranchMetric = analyticsPayload?.branches.performance.find((branch) => branch.branchId === selectedBranchId) ?? null;
+  const selectedBranchOrders = selectedBranchId ? orders.filter((order) => order.branchId === selectedBranchId).slice(0, 6) : [];
+  const selectedBranchCustomer =
+    selectedBranchMetric?.customerId ? customers.find((customer) => customer.id === selectedBranchMetric.customerId) ?? null : null;
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
   const supportInbox = supportCases.filter((supportCase) => supportCase.status !== 'closed');
   const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -3809,7 +3814,12 @@ export default function Home() {
                       <div className="mt-4 space-y-3">
                         {analyticsPayload.branches.performance.length > 0 ? (
                           analyticsPayload.branches.performance.map((branch) => (
-                            <div key={branch.branchId} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                            <button
+                              key={branch.branchId}
+                              type="button"
+                              onClick={() => setSelectedBranchId(branch.branchId)}
+                              className="w-full rounded-2xl bg-white px-4 py-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                            >
                               <div className="flex items-center justify-between gap-3">
                                 <div>
                                   <div className="text-sm font-extrabold text-stone-950">{branch.branchName}</div>
@@ -3824,12 +3834,67 @@ export default function Home() {
                               <div className="mt-2 text-xs text-stone-500">
                                 Returns {branch.returnCount} | Failures {branch.failureCount} | Avg Rs. {branch.averageOrderValue.toLocaleString()}
                               </div>
-                            </div>
+                            </button>
                           ))
                         ) : (
                           <GateMessage message="No branch analytics yet." />
                         )}
                       </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-950 p-5 text-stone-50 lg:col-span-2">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Branch drilldown</div>
+                          <div className="mt-1 text-sm text-stone-300">
+                            Click a branch above to inspect route load, customer context, and recent orders.
+                          </div>
+                        </div>
+                        <div className="rounded-2xl bg-white/10 px-3 py-2 text-xs font-semibold text-stone-200">
+                          {selectedBranchMetric ? selectedBranchMetric.branchName : 'No branch selected'}
+                        </div>
+                      </div>
+                      {selectedBranchMetric ? (
+                        <div className="mt-4 space-y-4">
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            <InfoBlock label="Orders" value={String(selectedBranchMetric.orderCount)} />
+                            <InfoBlock label="Revenue" value={`Rs. ${selectedBranchMetric.revenue.toLocaleString()}`} />
+                            <InfoBlock label="Returns" value={String(selectedBranchMetric.returnCount)} />
+                            <InfoBlock label="Failures" value={String(selectedBranchMetric.failureCount)} />
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <InfoBlock label="Success rate" value={`${selectedBranchMetric.deliverySuccessRate}%`} />
+                            <InfoBlock label="Avg order" value={`Rs. ${selectedBranchMetric.averageOrderValue.toLocaleString()}`} />
+                          </div>
+                          <div className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-stone-200">
+                            Customer: {selectedBranchCustomer?.name ?? selectedBranchMetric.customerId}
+                            <br />
+                            Zone: {selectedBranchCustomer?.deliveryZone ?? 'Unknown'} | Status: {selectedBranchMetric.status}
+                          </div>
+                          <div className="space-y-2">
+                            <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-300">Recent orders</div>
+                            {selectedBranchOrders.length > 0 ? (
+                              selectedBranchOrders.map((order) => (
+                                <div key={order.id} className="rounded-2xl bg-white/10 px-4 py-3 text-sm">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="font-semibold text-white">{order.id}</div>
+                                    <div className="text-xs uppercase tracking-[0.18em] text-stone-300">{order.status}</div>
+                                  </div>
+                                  <div className="mt-1 text-xs text-stone-300">
+                                    {order.serviceDate} | Rs. {order.amountTotal.toLocaleString()} | {order.paymentMode}
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <GateMessage message="No orders for this branch yet." />
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-4 rounded-2xl bg-white/10 px-4 py-3 text-sm text-stone-300">
+                          Select a branch card to inspect its live performance.
+                        </div>
+                      )}
                     </div>
 
                     <div className="rounded-3xl bg-stone-100 p-5">

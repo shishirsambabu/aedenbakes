@@ -152,7 +152,7 @@ class AedenBakesCustomerApp extends StatelessWidget {
 
 enum _JourneyPhase { splash, auth, onboard, review, approved, home }
 
-enum _HomeTab { home, cart, orders, account }
+enum _HomeTab { home, cart, orders, notifications, account }
 
 class AedenJourney extends StatefulWidget {
   const AedenJourney({super.key});
@@ -352,6 +352,7 @@ class _AedenJourneyState extends State<AedenJourney> {
   final List<_CreditLedgerEntry> _creditLedgerEntries = [];
   final List<_SubstitutionRule> _substitutionRules = [];
   final List<_SubstitutionEvent> _substitutionEvents = [];
+  final List<_CustomerNotification> _notifications = [];
   final List<_CustomerBranch> _branches = [
     const _CustomerBranch(
       id: 'branch-main',
@@ -729,6 +730,15 @@ class _AedenJourneyState extends State<AedenJourney> {
         final payload = jsonDecode(standingOrdersResponse.body) as Map<String, dynamic>;
         _applyStandingOrders(payload);
       }
+
+      final notificationsResponse = await http.get(
+        Uri.parse('$_apiBaseUrl/customer/notifications'),
+        headers: _authHeaders(),
+      );
+      if (notificationsResponse.statusCode >= 200 && notificationsResponse.statusCode < 300) {
+        final payload = jsonDecode(notificationsResponse.body) as Map<String, dynamic>;
+        _applyNotifications(payload);
+      }
     } catch (_) {
       // Demo mode can continue if sync fails.
     }
@@ -1012,6 +1022,33 @@ class _AedenJourneyState extends State<AedenJourney> {
       _recurrenceRules
         ..clear()
         ..addAll(recurrenceRules.isNotEmpty ? recurrenceRules : existingRecurrenceRules);
+    });
+  }
+
+  void _applyNotifications(Map<String, dynamic> payload) {
+    final existingNotifications = List<_CustomerNotification>.from(_notifications);
+    final notifications = (payload['jobs'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _CustomerNotification(
+            id: entry['id'] as String? ?? '',
+            title: entry['subject'] as String? ?? '',
+            summary: entry['body'] as String? ?? (entry['templateCode'] as String? ?? ''),
+            channel: entry['channel'] as String? ?? 'in_app',
+            status: entry['status'] as String? ?? 'delivered',
+            createdAt: entry['createdAt'] as String? ?? '',
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _notifications
+        ..clear()
+        ..addAll(notifications.isNotEmpty ? notifications : existingNotifications);
     });
   }
 
@@ -2403,6 +2440,7 @@ class _AedenJourneyState extends State<AedenJourney> {
       _HomeTab.home => _buildHomeTab(),
       _HomeTab.cart => _buildCartTab(),
       _HomeTab.orders => _buildOrdersTab(),
+      _HomeTab.notifications => _buildNotificationsTab(),
       _HomeTab.account => _buildAccountTab(),
     };
 
@@ -2510,7 +2548,7 @@ class _AedenJourneyState extends State<AedenJourney> {
               businessName: _businessController.text,
               branchName: _activeBranch().name,
               countdownLabel: _countdownLabel(),
-              onNotifications: () => _showMessage('Notifications open here'),
+              onNotifications: () => _changeTab(_HomeTab.notifications),
               onProfile: () => _changeTab(_HomeTab.account),
             ),
             const SizedBox(height: 12),
@@ -2782,6 +2820,101 @@ class _AedenJourneyState extends State<AedenJourney> {
                 ),
               );
             }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotificationsTab() {
+    return SafeArea(
+      bottom: false,
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          18,
+          22,
+          18,
+          124 + MediaQuery.of(context).padding.bottom,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SubHead(title: 'Alerts', hideBack: true),
+            const SizedBox(height: 10),
+            _PremiumSectionCard(
+              title: 'Stay in the loop',
+              subtitle: 'Order confirmations, dispatch updates, reminders, and bakery replies land here.',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _PremiumBadge(text: '${_notifications.length} messages'),
+                      _PremiumBadge(text: 'WhatsApp ready'),
+                      _PremiumBadge(text: 'Invoice reminders'),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  if (_notifications.isEmpty)
+                    Text(
+                      'No notifications yet. The bakery will use this space for confirmations, dispatch, and delay alerts.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    )
+                  else
+                    Column(
+                      children: _notifications
+                          .map(
+                            (notification) => Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(18),
+                                  border: Border.all(color: AedenPalette.line),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            notification.title,
+                                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ),
+                                        _PremiumBadge(text: notification.status),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      notification.summary,
+                                      style: Theme.of(context).textTheme.bodyMedium,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      '${notification.channel.toUpperCase()} · ${notification.createdAt}',
+                                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                        color: AedenPalette.brown,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          )
+                          .toList(growable: false),
+                    ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -5539,6 +5672,12 @@ class _BottomNav extends StatelessWidget {
             onTap: () => onChanged(_HomeTab.orders),
           ),
           _NavItem(
+            icon: Icons.notifications_none_rounded,
+            label: 'Alerts',
+            selected: tab == _HomeTab.notifications,
+            onTap: () => onChanged(_HomeTab.notifications),
+          ),
+          _NavItem(
             icon: Icons.person_rounded,
             label: 'Account',
             selected: tab == _HomeTab.account,
@@ -5673,6 +5812,24 @@ class _Order {
   final int total;
   final int stage;
   final List<String> items;
+}
+
+class _CustomerNotification {
+  const _CustomerNotification({
+    required this.id,
+    required this.title,
+    required this.summary,
+    required this.channel,
+    required this.status,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String summary;
+  final String channel;
+  final String status;
+  final String createdAt;
 }
 
 class _CustomerBranch {

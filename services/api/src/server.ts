@@ -163,8 +163,10 @@ type NotificationJob = {
   correlationKey: string;
   recipient: string;
   subject: string;
+  body: string;
   createdAt: string;
   sentAt: string | null;
+  provider: 'push' | 'whatsapp' | 'sms' | 'internal';
 };
 
 type NotificationDelivery = {
@@ -175,6 +177,28 @@ type NotificationDelivery = {
   status: 'queued' | 'sent' | 'delivered' | 'failed' | 'retrying';
   attemptNo: number;
   createdAt: string;
+  gateway: 'push' | 'whatsapp' | 'sms' | 'internal';
+  errorMessage: string | null;
+};
+
+type NotificationTemplate = {
+  code: string;
+  name: string;
+  channelPriority: Array<NotificationJob['channel']>;
+  subject: string;
+  body: string;
+  retryable: boolean;
+};
+
+type NotificationPreference = {
+  customerId: string;
+  pushEnabled: boolean;
+  whatsappEnabled: boolean;
+  smsEnabled: boolean;
+  inAppEnabled: boolean;
+  phone?: string;
+  whatsappNumber?: string;
+  updatedAt: string;
 };
 
 type AccountHealthSnapshot = {
@@ -287,6 +311,8 @@ type ApiStateSnapshot = {
   deliveryEventIds: string[];
   notificationJobs: NotificationJob[];
   notificationDeliveries: NotificationDelivery[];
+  notificationTemplates: NotificationTemplate[];
+  notificationPreferences: NotificationPreference[];
   accountHealthSnapshots: AccountHealthSnapshot[];
   accountActions: AccountAction[];
   alertRules: AlertRule[];
@@ -370,6 +396,19 @@ database.exec(`
     user_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_templates (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_preferences (
+    customer_id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
 `);
 recordMigration('database-initialized');
@@ -607,6 +646,62 @@ let substitutionRules: SubstitutionRule[] = [
 let substitutionEvents: SubstitutionEvent[] = [];
 let notificationJobs: NotificationJob[] = [];
 let notificationDeliveries: NotificationDelivery[] = [];
+let notificationTemplates: NotificationTemplate[] = [
+  {
+    code: 'order_confirmed',
+    name: 'Order confirmed',
+    channelPriority: ['whatsapp', 'sms', 'in_app'],
+    subject: 'Your order is confirmed',
+    body: 'We have locked your order and the bakery team is preparing your batch.',
+    retryable: true,
+  },
+  {
+    code: 'dispatch_update',
+    name: 'Dispatch update',
+    channelPriority: ['whatsapp', 'sms', 'in_app'],
+    subject: 'Your order is out for delivery',
+    body: 'The route has started and the delivery partner is on the way.',
+    retryable: true,
+  },
+  {
+    code: 'delay_alert',
+    name: 'Delay alert',
+    channelPriority: ['whatsapp', 'sms', 'in_app'],
+    subject: 'Delivery delay update',
+    body: 'A delay has been detected and the bakery is adjusting the route immediately.',
+    retryable: true,
+  },
+  {
+    code: 'invoice_reminder',
+    name: 'Invoice reminder',
+    channelPriority: ['whatsapp', 'sms', 'in_app'],
+    subject: 'Invoice reminder',
+    body: 'Your latest invoice is ready and the accounts team has a reminder queued.',
+    retryable: true,
+  },
+];
+let notificationPreferences: NotificationPreference[] = [
+  {
+    customerId: 'cust_cafe_nook',
+    pushEnabled: true,
+    whatsappEnabled: true,
+    smsEnabled: true,
+    inAppEnabled: true,
+    phone: '9000000001',
+    whatsappNumber: '9000000001',
+    updatedAt: '2026-06-19T08:30:00+05:30',
+  },
+  {
+    customerId: 'cust_hotel_lotus',
+    pushEnabled: true,
+    whatsappEnabled: true,
+    smsEnabled: true,
+    inAppEnabled: true,
+    phone: '9000000002',
+    whatsappNumber: '9000000002',
+    updatedAt: '2026-06-19T08:30:00+05:30',
+  },
+];
 let accountHealthSnapshots: AccountHealthSnapshot[] = [];
 let accountActions: AccountAction[] = [];
 let alertRules: AlertRule[] = [
@@ -2209,19 +2304,85 @@ app.get('/notifications', authenticate, requireAnyRole(['owner', 'manager', 'acc
   res.json({
     jobs: notificationJobs,
     deliveries: notificationDeliveries,
+    templates: notificationTemplates,
+    preferences: notificationPreferences,
   });
 });
 
+app.get('/customer/notifications', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session missing customer id' });
+    return;
+  }
+
+  res.json({
+    jobs: notificationJobs.filter((job) => job.recipient === customerId),
+    deliveries: notificationDeliveries.filter((delivery) => {
+      const job = notificationJobs.find((entry) => entry.id === delivery.jobId);
+      return job?.recipient === customerId;
+    }),
+    templates: notificationTemplates,
+    preference: notificationPreferences.find((entry) => entry.customerId === customerId) ?? null,
+  });
+});
+
+app.get('/notifications/templates', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({ templates: notificationTemplates });
+});
+
+app.get('/notifications/preferences', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({ preferences: notificationPreferences });
+});
+
+app.post('/notifications/preferences', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const { customerId, pushEnabled, whatsappEnabled, smsEnabled, inAppEnabled, phone, whatsappNumber } = req.body as {
+    customerId?: string;
+    pushEnabled?: boolean;
+    whatsappEnabled?: boolean;
+    smsEnabled?: boolean;
+    inAppEnabled?: boolean;
+    phone?: string;
+    whatsappNumber?: string;
+  };
+  if (!customerId) {
+    res.status(400).json({ error: 'customerId is required' });
+    return;
+  }
+
+  const updatedAt = new Date().toISOString();
+  const existingIndex = notificationPreferences.findIndex((entry) => entry.customerId === customerId);
+  const preference: NotificationPreference = {
+    customerId,
+    pushEnabled: pushEnabled ?? notificationPreferences[existingIndex]?.pushEnabled ?? true,
+    whatsappEnabled: whatsappEnabled ?? notificationPreferences[existingIndex]?.whatsappEnabled ?? true,
+    smsEnabled: smsEnabled ?? notificationPreferences[existingIndex]?.smsEnabled ?? true,
+    inAppEnabled: inAppEnabled ?? notificationPreferences[existingIndex]?.inAppEnabled ?? true,
+    phone: phone ?? notificationPreferences[existingIndex]?.phone,
+    whatsappNumber: whatsappNumber ?? notificationPreferences[existingIndex]?.whatsappNumber,
+    updatedAt,
+  };
+
+  if (existingIndex >= 0) {
+    notificationPreferences.splice(existingIndex, 1, preference);
+  } else {
+    notificationPreferences.unshift(preference);
+  }
+  persistStateSoon();
+  res.status(201).json({ preference });
+});
+
 app.post('/notifications/queue', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
-  const { customerId, channel = 'in_app', templateCode = 'manual', subject = 'Manual notification', correlationKey } = req.body as {
+  const { customerId, channel, templateCode = 'manual', subject, body, correlationKey } = req.body as {
     customerId?: string;
     channel?: NotificationJob['channel'];
     templateCode?: string;
     subject?: string;
+    body?: string;
     correlationKey?: string;
   };
-  if (!customerId || !subject.trim()) {
-    res.status(400).json({ error: 'customerId and subject are required' });
+  if (!customerId) {
+    res.status(400).json({ error: 'customerId is required' });
     return;
   }
   const customer = customers.find((entry) => entry.id === customerId);
@@ -2229,16 +2390,53 @@ app.post('/notifications/queue', authenticate, requireAnyRole(['owner', 'manager
     res.status(404).json({ error: 'Customer not found' });
     return;
   }
+  const template = notificationTemplates.find((entry) => entry.code === templateCode) ?? {
+    code: templateCode,
+    name: templateCode,
+    channelPriority: ['in_app'],
+    subject: subject?.trim() || 'Manual notification',
+    body: subject?.trim() || 'Manual notification',
+    retryable: true,
+  };
   const result = enqueueNotification({
     customerId,
-    channel,
+    channel: channel ?? template.channelPriority[0],
     templateCode,
-    subject: subject.trim(),
+    subject: subject?.trim() || template.subject,
+    body: body?.trim() || template.body,
     correlationKey: correlationKey?.trim() || `manual:${customerId}:${crypto.randomUUID()}`,
     recipient: customer.id,
   });
   persistStateSoon();
   res.status(201).json(result);
+});
+
+app.post('/notifications/:jobId/retry', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const job = notificationJobs.find((entry) => entry.id === req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Notification job not found' });
+    return;
+  }
+  if (job.status !== 'failed' && job.status !== 'retrying') {
+    res.status(400).json({ error: 'Only failed notifications can be retried' });
+    return;
+  }
+  const customer = customers.find((entry) => entry.id === job.recipient);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+  const retried = enqueueNotification({
+    customerId: customer.id,
+    channel: job.channel,
+    templateCode: job.templateCode,
+    subject: job.subject,
+    body: job.body,
+    correlationKey: `${job.correlationKey}:retry:${job.status}-${job.id}`,
+    recipient: customer.id,
+  });
+  persistStateSoon();
+  res.status(201).json(retried);
 });
 
 app.get('/account-health', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
@@ -3061,11 +3259,60 @@ function recordAudit(entry: Omit<AuditEvent, 'id' | 'createdAt'>) {
   });
 }
 
+function getNotificationTemplate(templateCode: string) {
+  return notificationTemplates.find((template) => template.code === templateCode) ?? {
+    code: templateCode,
+    name: templateCode,
+    channelPriority: ['in_app'],
+    subject: 'Manual notification',
+    body: 'Manual notification',
+    retryable: true,
+  };
+}
+
+function getNotificationPreference(customerId: string) {
+  return notificationPreferences.find((preference) => preference.customerId === customerId) ?? {
+    customerId,
+    pushEnabled: true,
+    whatsappEnabled: true,
+    smsEnabled: true,
+    inAppEnabled: true,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function channelAvailable(channel: NotificationJob['channel'], preference: NotificationPreference) {
+  switch (channel) {
+    case 'sms':
+      return preference.smsEnabled;
+    case 'whatsapp':
+      return preference.whatsappEnabled;
+    case 'email':
+      return true;
+    case 'in_app':
+      return preference.inAppEnabled;
+  }
+}
+
+function gatewayForChannel(channel: NotificationJob['channel']) {
+  switch (channel) {
+    case 'sms':
+      return 'sms';
+    case 'whatsapp':
+      return 'whatsapp';
+    case 'email':
+      return 'internal';
+    case 'in_app':
+      return 'internal';
+  }
+}
+
 function enqueueNotification(_input: {
   customerId: string;
-  channel: NotificationJob['channel'];
+  channel?: NotificationJob['channel'];
   templateCode: string;
   subject: string;
+  body?: string;
   correlationKey: string;
   recipient: string;
 }) {
@@ -3078,26 +3325,34 @@ function enqueueNotification(_input: {
     };
   }
 
+  const template = getNotificationTemplate(input.templateCode);
+  const preference = getNotificationPreference(input.customerId);
+  const selectedChannel = input.channel ?? template.channelPriority.find((candidate) => channelAvailable(candidate, preference)) ?? 'in_app';
+  const resolvedStatus: NotificationJob['status'] = channelAvailable(selectedChannel, preference) ? 'delivered' : 'failed';
   const now = new Date().toISOString();
   const job: NotificationJob = {
     id: `ntf_${crypto.randomUUID()}`,
-    channel: input.channel,
+    channel: selectedChannel,
     templateCode: input.templateCode,
-    status: 'delivered',
+    status: resolvedStatus,
     correlationKey: input.correlationKey,
     recipient: input.recipient,
     subject: input.subject,
+    body: input.body ?? template.body,
     createdAt: now,
-    sentAt: now,
+    sentAt: resolvedStatus === 'failed' ? null : now,
+    provider: gatewayForChannel(selectedChannel),
   };
   const delivery: NotificationDelivery = {
     id: `ntfd_${crypto.randomUUID()}`,
     jobId: job.id,
     recipient: input.recipient,
-    providerMessageId: `msg_${crypto.randomUUID().slice(0, 8)}`,
-    status: 'delivered',
+    providerMessageId: resolvedStatus === 'failed' ? null : `msg_${crypto.randomUUID().slice(0, 8)}`,
+    status: resolvedStatus,
     attemptNo: 1,
     createdAt: now,
+    gateway: gatewayForChannel(selectedChannel),
+    errorMessage: resolvedStatus === 'failed' ? `Channel ${selectedChannel} is disabled for this customer` : null,
   };
   notificationJobs.unshift(job);
   notificationDeliveries.unshift(delivery);
@@ -3979,6 +4234,8 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     deliveryEventIds: parsed.deliveryEventIds ?? [],
     notificationJobs: parsed.notificationJobs ?? notificationJobs,
     notificationDeliveries: parsed.notificationDeliveries ?? notificationDeliveries,
+    notificationTemplates: parsed.notificationTemplates ?? notificationTemplates,
+    notificationPreferences: parsed.notificationPreferences ?? notificationPreferences,
     accountHealthSnapshots: parsed.accountHealthSnapshots ?? accountHealthSnapshots,
     accountActions: parsed.accountActions ?? accountActions,
     alertRules: parsed.alertRules ?? alertRules,
@@ -4046,6 +4303,8 @@ async function persistState() {
     deliveryEventIds: [...processedDeliveryEventIds],
     notificationJobs,
     notificationDeliveries,
+    notificationTemplates,
+    notificationPreferences,
     accountHealthSnapshots,
     accountActions,
     alertRules,
@@ -4138,6 +4397,8 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   approvals.splice(0, approvals.length, ...snapshot.approvals);
   notificationJobs.splice(0, notificationJobs.length, ...snapshot.notificationJobs);
   notificationDeliveries.splice(0, notificationDeliveries.length, ...snapshot.notificationDeliveries);
+  notificationTemplates.splice(0, notificationTemplates.length, ...snapshot.notificationTemplates);
+  notificationPreferences.splice(0, notificationPreferences.length, ...snapshot.notificationPreferences);
   accountHealthSnapshots.splice(0, accountHealthSnapshots.length, ...snapshot.accountHealthSnapshots);
   accountActions.splice(0, accountActions.length, ...snapshot.accountActions);
   alertRules.splice(0, alertRules.length, ...snapshot.alertRules);

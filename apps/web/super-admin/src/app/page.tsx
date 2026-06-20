@@ -415,6 +415,7 @@ type NotificationJob = {
   subject: string;
   createdAt: string;
   sentAt: string | null;
+  provider: 'push' | 'whatsapp' | 'sms' | 'internal';
 };
 
 type NotificationDelivery = {
@@ -425,6 +426,28 @@ type NotificationDelivery = {
   status: 'queued' | 'sent' | 'delivered' | 'failed' | 'retrying';
   attemptNo: number;
   createdAt: string;
+  gateway: 'push' | 'whatsapp' | 'sms' | 'internal';
+  errorMessage: string | null;
+};
+
+type NotificationTemplate = {
+  code: string;
+  name: string;
+  channelPriority: Array<NotificationJob['channel']>;
+  subject: string;
+  body: string;
+  retryable: boolean;
+};
+
+type NotificationPreference = {
+  customerId: string;
+  pushEnabled: boolean;
+  whatsappEnabled: boolean;
+  smsEnabled: boolean;
+  inAppEnabled: boolean;
+  phone?: string;
+  whatsappNumber?: string;
+  updatedAt: string;
 };
 
 type AccountHealthSnapshot = {
@@ -530,6 +553,8 @@ type AppState = {
   notifications: {
     jobs: NotificationJob[];
     deliveries: NotificationDelivery[];
+    templates: NotificationTemplate[];
+    preferences: NotificationPreference[];
   };
   accountHealth: {
     snapshots: AccountHealthSnapshot[];
@@ -568,7 +593,7 @@ const initialAppState: AppState = {
   substitutionRules: [],
   substitutionEvents: [],
   erpContractPreview: null,
-  notifications: { jobs: [], deliveries: [] },
+  notifications: { jobs: [], deliveries: [], templates: [], preferences: [] },
   accountHealth: { snapshots: [], actions: [] },
   analytics: { latest: null, snapshots: [], rollups: [] },
   customerRequests: [],
@@ -614,6 +639,11 @@ export default function Home() {
   const [subRuleProductId, setSubRuleProductId] = useState('prod_loaf');
   const [subRuleReplacementId, setSubRuleReplacementId] = useState('prod_danish');
   const [subRuleReason, setSubRuleReason] = useState('Fallback substitute when the main item is tight.');
+  const [notificationCustomerId, setNotificationCustomerId] = useState('cust_cafe_nook');
+  const [notificationTemplateCode, setNotificationTemplateCode] = useState('order_confirmed');
+  const [notificationChannel, setNotificationChannel] = useState<'in_app' | 'sms' | 'whatsapp' | 'email'>('whatsapp');
+  const [notificationSubject, setNotificationSubject] = useState('Order confirmed');
+  const [notificationBody, setNotificationBody] = useState('We have locked your order and the bakery team is preparing your batch.');
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -703,7 +733,7 @@ export default function Home() {
       let substitutionEvents: SubstitutionEvent[] = [];
       let erpSyncStatus: ErpSyncStatus | null = null;
       let erpContractPreview: VasyErpContractPreview | null = null;
-      let notifications: AppState['notifications'] = { jobs: [], deliveries: [] };
+      let notifications: AppState['notifications'] = { jobs: [], deliveries: [], templates: [], preferences: [] };
       let accountHealth: AppState['accountHealth'] = { snapshots: [], actions: [] };
       let analytics: AppState['analytics'] = { latest: null, snapshots: [], rollups: [] };
       let customerRequests: CustomerRequest[] = [];
@@ -762,6 +792,8 @@ export default function Home() {
         notifications = {
           jobs: notificationsJson.jobs ?? [],
           deliveries: notificationsJson.deliveries ?? [],
+          templates: notificationsJson.templates ?? [],
+          preferences: notificationsJson.preferences ?? [],
         };
       }
 
@@ -925,6 +957,7 @@ export default function Home() {
     substitutionRules,
     substitutionEvents,
     erpContractPreview,
+    notifications,
   } = appState;
   const latestEvents = auditEvents.slice(0, 4);
   const selectedCustomerOrders = selectedCustomer?.orders ?? [];
@@ -997,6 +1030,63 @@ export default function Home() {
     .join('')
     .slice(0, 2)
     .toUpperCase() || 'AB';
+
+  async function queueNotificationFromAdmin() {
+    if (!token) {
+      return;
+    }
+
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/notifications/queue`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders(token),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          customerId: notificationCustomerId,
+          channel: notificationChannel,
+          templateCode: notificationTemplateCode,
+          subject: notificationSubject,
+          body: notificationBody,
+          correlationKey: `admin:${notificationTemplateCode}:${notificationCustomerId}:${Date.now()}`,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('Could not queue notification.');
+      }
+      setActionMessage('Notification queued.');
+      await refreshAppState();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : 'Could not queue notification.');
+    }
+  }
+
+  async function retryFirstFailedNotification() {
+    if (!token) {
+      return;
+    }
+
+    const failed = appState.notifications.jobs.find((job) => job.status === 'failed');
+    if (!failed) {
+      setActionMessage('No failed notification to retry.');
+      return;
+    }
+
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/notifications/${failed.id}/retry`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      if (!response.ok) {
+        throw new Error('Could not retry notification.');
+      }
+      setActionMessage('Retry queued.');
+      await refreshAppState();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : 'Could not retry notification.');
+    }
+  }
 
   async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = 6000) {
     const controller = new AbortController();
@@ -3261,6 +3351,135 @@ export default function Home() {
                 <InfoBlock label="Saved addresses" value={`${appState.savedAddresses.length}`} />
                 <InfoBlock label="Analytics snapshots" value={`${appState.analytics.snapshots.length}`} />
                 <InfoBlock label="Reports" value={`${appState.reportExports.length}`} />
+              </div>
+            </Card>
+
+            <Card title="Phase 9 notification ops" subtitle="Template-based updates with channel priority, retry, and customer preference awareness.">
+              <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <InfoBlock label="Templates" value={`${appState.notifications.templates.length}`} />
+                    <InfoBlock label="Preferences" value={`${appState.notifications.preferences.length}`} />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Customer</div>
+                      <select
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={notificationCustomerId}
+                        onChange={(event) => setNotificationCustomerId(event.target.value)}
+                      >
+                        {customers.map((customer) => (
+                          <option key={customer.id} value={customer.id}>
+                            {customer.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Template</div>
+                      <select
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={notificationTemplateCode}
+                        onChange={(event) => {
+                          const code = event.target.value;
+                          setNotificationTemplateCode(code);
+                          const template = appState.notifications.templates.find((entry) => entry.code === code);
+                          if (template) {
+                            setNotificationSubject(template.subject);
+                            setNotificationBody(template.body);
+                            setNotificationChannel(template.channelPriority[0] ?? 'in_app');
+                          }
+                        }}
+                      >
+                        {appState.notifications.templates.map((template) => (
+                          <option key={template.code} value={template.code}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Channel</div>
+                      <select
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={notificationChannel}
+                        onChange={(event) => setNotificationChannel(event.target.value as typeof notificationChannel)}
+                      >
+                        <option value="whatsapp">WhatsApp</option>
+                        <option value="sms">SMS</option>
+                        <option value="in_app">In-app</option>
+                        <option value="email">Email</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Subject</div>
+                      <input
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={notificationSubject}
+                        onChange={(event) => setNotificationSubject(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <label className="space-y-2 text-sm">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Message body</div>
+                    <textarea
+                      className="min-h-24 w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                      value={notificationBody}
+                      onChange={(event) => setNotificationBody(event.target.value)}
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={queueNotificationFromAdmin}
+                      className="rounded-2xl bg-stone-950 px-5 py-3 text-sm font-extrabold text-white"
+                    >
+                      Queue notification
+                    </button>
+                    <button
+                      type="button"
+                      onClick={retryFirstFailedNotification}
+                      className="rounded-2xl border border-stone-300 bg-white px-5 py-3 text-sm font-extrabold text-stone-700"
+                    >
+                      Retry failed
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="rounded-3xl bg-stone-50 p-4">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Recent jobs</div>
+                    <div className="mt-3 space-y-2">
+                      {appState.notifications.jobs.slice(0, 5).map((job) => (
+                        <div key={job.id} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-semibold text-stone-950">{job.subject}</div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{job.status}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-stone-500">
+                            {job.channel} | {job.provider} | {job.recipient}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-3xl bg-stone-50 p-4">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Channel preferences</div>
+                    <div className="mt-3 space-y-2">
+                      {appState.notifications.preferences.slice(0, 5).map((preference) => (
+                        <div key={preference.customerId} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="font-semibold text-stone-950">{preference.customerId}</div>
+                          <div className="mt-1 text-xs text-stone-500">
+                            WA {preference.whatsappEnabled ? 'on' : 'off'} | SMS {preference.smsEnabled ? 'on' : 'off'} | In-app {preference.inAppEnabled ? 'on' : 'off'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-600">
+                {appState.notifications.deliveries.length} deliveries tracked. Failed items can be retried after preference changes.
               </div>
             </Card>
 

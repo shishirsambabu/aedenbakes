@@ -515,6 +515,7 @@ type AlertEvent = {
 type AnalyticsSnapshot = {
   id: string;
   snapshotTime: string;
+  status: 'building' | 'ready' | 'published';
   payloadJson: Record<string, unknown>;
   createdAt: string;
 };
@@ -649,6 +650,9 @@ type ReportExport = {
   reportCode: string;
   createdBy: string;
   createdAt: string;
+  status: 'queued' | 'generated' | 'delivered';
+  generatedAt: string | null;
+  deliveredAt: string | null;
   payloadJson: Record<string, unknown>;
 };
 
@@ -1194,6 +1198,68 @@ export default function Home() {
     .join('')
     .slice(0, 2)
     .toUpperCase() || 'AB';
+
+  async function publishAnalyticsSnapshot() {
+    if (!token) {
+      return;
+    }
+    const response = await fetchWithTimeout(`${API_BASE_URL}/analytics/publish`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    });
+    if (!response.ok) {
+      throw new Error('Could not publish analytics snapshot.');
+    }
+    await refreshAppState();
+  }
+
+  async function queueManagementReport() {
+    if (!token) {
+      return;
+    }
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/export`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ reportCode: 'management_intelligence' }),
+    });
+    if (!response.ok) {
+      throw new Error('Could not queue report export.');
+    }
+    await refreshAppState();
+  }
+
+  async function generateLatestReport() {
+    if (!token || appState.reportExports.length === 0) {
+      return;
+    }
+    const latestReport = appState.reportExports[0];
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/${latestReport.id}/generate`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    });
+    if (!response.ok) {
+      throw new Error('Could not generate report.');
+    }
+    await refreshAppState();
+  }
+
+  async function deliverLatestReport() {
+    if (!token || appState.reportExports.length === 0) {
+      return;
+    }
+    const latestReport = appState.reportExports[0];
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reports/${latestReport.id}/deliver`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    });
+    if (!response.ok) {
+      throw new Error('Could not deliver report.');
+    }
+    await refreshAppState();
+  }
 
   async function queueNotificationFromAdmin() {
     if (!token) {
@@ -3654,6 +3720,71 @@ export default function Home() {
                       </div>
                       <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-600">
                         Branch overrides {analyticsPayload.pricing.branchOverrides} | Customer overrides {analyticsPayload.pricing.customerOverrides} | Avg ticket Rs. {analyticsPayload.pricing.averageOrderValue.toLocaleString()}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-amber-50 p-5 ring-1 ring-amber-200 lg:col-span-2">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-700">Snapshot and report workflow</div>
+                          <div className="mt-1 text-sm text-stone-600">
+                            Publish the latest analytics snapshot and move an export through queue, generation, and delivery.
+                          </div>
+                        </div>
+                        <div className="rounded-2xl bg-white px-3 py-2 text-xs font-semibold text-stone-600">
+                          Snapshot {analytics.latest?.status ?? 'none'} | Reports {appState.reportExports.length}
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            publishAnalyticsSnapshot().catch((error) => setError((error as Error).message));
+                          }}
+                          className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white"
+                        >
+                          Publish snapshot
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            queueManagementReport().catch((error) => setError((error as Error).message));
+                          }}
+                          className="rounded-2xl border border-amber-400 bg-white px-4 py-3 text-sm font-bold text-amber-800"
+                        >
+                          Queue report
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            generateLatestReport().catch((error) => setError((error as Error).message));
+                          }}
+                          className="rounded-2xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold text-stone-700"
+                        >
+                          Generate report
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            deliverLatestReport().catch((error) => setError((error as Error).message));
+                          }}
+                          className="rounded-2xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold text-stone-700"
+                        >
+                          Deliver report
+                        </button>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        {appState.reportExports.slice(0, 2).map((report) => (
+                          <div key={report.id} className="rounded-2xl bg-white px-4 py-3 text-sm">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-semibold text-stone-950">{report.reportCode}</div>
+                              <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{report.status}</div>
+                            </div>
+                            <div className="mt-1 text-xs text-stone-500">
+                              {report.createdBy} | {new Date(report.createdAt).toLocaleString()}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   </div>

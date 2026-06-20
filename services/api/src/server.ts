@@ -333,6 +333,7 @@ type AnalyticsSnapshot = {
   id: string;
   snapshotTime: string;
   payloadJson: Record<string, unknown>;
+  status: 'building' | 'ready' | 'published';
   createdAt: string;
 };
 
@@ -369,6 +370,9 @@ type ReportExport = {
   reportCode: string;
   createdBy: string;
   createdAt: string;
+  status: 'queued' | 'generated' | 'delivered';
+  generatedAt: string | null;
+  deliveredAt: string | null;
   payloadJson: Record<string, unknown>;
 };
 
@@ -2951,6 +2955,21 @@ app.post('/analytics/rebuild', authenticate, requireAnyRole(['owner', 'manager',
   });
 });
 
+app.post('/analytics/publish', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (_req, res) => {
+  if (analyticsSnapshots.length === 0) {
+    res.status(404).json({ error: 'No analytics snapshot available' });
+    return;
+  }
+  analyticsSnapshots[0].status = 'published';
+  persistStateSoon();
+  res.json({
+    latest: analyticsSnapshots[0],
+    snapshots: analyticsSnapshots,
+    rollups: kpiRollups,
+    insights: analyticsSnapshots[0]?.payloadJson ?? null,
+  });
+});
+
 app.get('/alert-rules', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
   res.json({ alertRules, alertEvents });
 });
@@ -3059,11 +3078,46 @@ app.post('/reports/export', authenticate, requireAnyRole(['owner', 'manager', 'a
     reportCode,
     createdBy: req.session?.user.username ?? 'system',
     createdAt: new Date().toISOString(),
+    status: 'queued',
+    generatedAt: null,
+    deliveredAt: null,
     payloadJson: payload,
   };
   reportExports.unshift(report);
   persistStateSoon();
   res.status(201).json({ report, reportExports });
+});
+
+app.post('/reports/:id/generate', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const report = reportExports.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!report) {
+    res.status(404).json({ error: 'Report not found' });
+    return;
+  }
+  if (report.status === 'delivered') {
+    res.status(400).json({ error: 'Report already delivered' });
+    return;
+  }
+  report.status = 'generated';
+  report.generatedAt = new Date().toISOString();
+  persistStateSoon();
+  res.json({ report, reportExports });
+});
+
+app.post('/reports/:id/deliver', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const report = reportExports.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!report) {
+    res.status(404).json({ error: 'Report not found' });
+    return;
+  }
+  if (report.status === 'queued') {
+    res.status(400).json({ error: 'Report must be generated before delivery' });
+    return;
+  }
+  report.status = 'delivered';
+  report.deliveredAt = new Date().toISOString();
+  persistStateSoon();
+  res.json({ report, reportExports });
 });
 
 app.get('/documents', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
@@ -4917,11 +4971,19 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     accountActions: parsed.accountActions ?? accountActions,
     alertRules: parsed.alertRules ?? alertRules,
     alertEvents: parsed.alertEvents ?? alertEvents,
-    analyticsSnapshots: parsed.analyticsSnapshots ?? analyticsSnapshots,
+    analyticsSnapshots: (parsed.analyticsSnapshots ?? analyticsSnapshots).map((snapshot) => ({
+      ...snapshot,
+      status: snapshot.status ?? 'ready',
+    })),
     kpiRollups: parsed.kpiRollups ?? kpiRollups,
     customerRequests: parsed.customerRequests ?? customerRequests,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
-    reportExports: parsed.reportExports ?? reportExports,
+    reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
+      ...report,
+      status: report.status ?? 'queued',
+      generatedAt: report.generatedAt ?? null,
+      deliveredAt: report.deliveredAt ?? null,
+    })),
     documents: parsed.documents ?? documents,
     documentAccessLogs: parsed.documentAccessLogs ?? documentAccessLogs,
     invoiceExports: parsed.invoiceExports ?? invoiceExports,
@@ -5628,6 +5690,7 @@ function refreshPhase3DerivedState() {
   analyticsSnapshots.splice(0, analyticsSnapshots.length, {
     id: `analytics_${today}_${analyticsSnapshots.length + 1}`,
     snapshotTime: now,
+    status: 'ready',
     payloadJson: analyticsPayload,
     createdAt: now,
   });

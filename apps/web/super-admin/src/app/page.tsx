@@ -527,6 +527,104 @@ type KpiRollup = {
   createdAt: string;
 };
 
+type AnalyticsSnapshotPayload = {
+  snapshotTime: string;
+  totals: {
+    customers: number;
+    activeCustomers: number;
+    repeatCustomers: number;
+    repeatPurchaseRate: number;
+    orders: number;
+    revenue: number;
+    averageOrderValue: number;
+    supportOpen: number;
+    activeStandingOrders: number;
+    watchCustomers: number;
+    deliverySuccessRate: number;
+    returnOrders: number;
+    returnQuantity: number;
+    failedDeliveries: number;
+    partialDeliveries: number;
+    creditExposure: number;
+  };
+  customers: {
+    segments: {
+      newCustomers: number;
+      repeatCustomers: number;
+      dormantCustomers: number;
+      highValueCustomers: number;
+      watchCustomers: number;
+    };
+    topCustomers: Array<{
+      customerId: string;
+      customerName: string;
+      orderCount: number;
+      revenue: number;
+      outstandingBalance: number;
+      riskState: string;
+      tier: string;
+    }>;
+  };
+  branches: {
+    totalBranches: number;
+    activeBranches: number;
+    performance: Array<{
+      branchId: string;
+      branchName: string;
+      customerId: string;
+      status: string;
+      orderCount: number;
+      revenue: number;
+      returnCount: number;
+      failureCount: number;
+      deliverySuccessRate: number;
+      averageOrderValue: number;
+    }>;
+  };
+  capacity: {
+    booked: number;
+    total: number;
+    fillRate: number;
+  };
+  delivery: {
+    delivered: number;
+    partialDeliveries: number;
+    failedDeliveries: number;
+    returnedOrders: number;
+    returnedQuantity: number;
+    deliverySuccessRate: number;
+    returnRate: number;
+  };
+  credit: {
+    exposure: number;
+    utilizationRate: number;
+    buckets: {
+      healthy: number;
+      watch: number;
+      blockSoon: number;
+      blocked: number;
+    };
+    watchCustomers: Array<{
+      customerId: string;
+      customerName: string;
+      riskState: string;
+      outstandingBalance: number;
+      creditLimit: number;
+    }>;
+  };
+  pricing: {
+    orderMix: {
+      prepaid: number;
+      partPay: number;
+      credit: number;
+    };
+    pricingRules: number;
+    branchOverrides: number;
+    customerOverrides: number;
+    averageOrderValue: number;
+  };
+};
+
 type CustomerRequest = {
   id: string;
   customerId: string;
@@ -591,6 +689,7 @@ type AppState = {
     latest: AnalyticsSnapshot | null;
     snapshots: AnalyticsSnapshot[];
     rollups: KpiRollup[];
+    insights: AnalyticsSnapshotPayload | null;
   };
   customerRequests: CustomerRequest[];
   savedAddresses: SavedAddress[];
@@ -624,7 +723,7 @@ const initialAppState: AppState = {
   documents: [],
   invoiceExports: [],
   accountHealth: { snapshots: [], actions: [] },
-  analytics: { latest: null, snapshots: [], rollups: [] },
+  analytics: { latest: null, snapshots: [], rollups: [], insights: null },
   customerRequests: [],
   savedAddresses: [],
   alertRules: [],
@@ -775,7 +874,7 @@ export default function Home() {
       let erpContractPreview: VasyErpContractPreview | null = null;
       let notifications: AppState['notifications'] = { jobs: [], deliveries: [], templates: [], preferences: [] };
       let accountHealth: AppState['accountHealth'] = { snapshots: [], actions: [] };
-      let analytics: AppState['analytics'] = { latest: null, snapshots: [], rollups: [] };
+      let analytics: AppState['analytics'] = { latest: null, snapshots: [], rollups: [], insights: null };
       let customerRequests: CustomerRequest[] = [];
       let savedAddresses: SavedAddress[] = [];
       let alertRules: AlertRule[] = [];
@@ -859,6 +958,7 @@ export default function Home() {
           latest: analyticsJson.latest ?? null,
           snapshots: analyticsJson.snapshots ?? [],
           rollups: analyticsJson.rollups ?? [],
+          insights: analyticsJson.insights ?? null,
         };
       }
 
@@ -1018,9 +1118,11 @@ export default function Home() {
     substitutionEvents,
     erpContractPreview,
     notifications,
+    analytics,
     documents,
     invoiceExports,
   } = appState;
+  const analyticsPayload = analytics.insights;
   const latestEvents = auditEvents.slice(0, 4);
   const selectedCustomerOrders = selectedCustomer?.orders ?? [];
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
@@ -3442,6 +3544,123 @@ export default function Home() {
                 <InfoBlock label="Analytics snapshots" value={`${appState.analytics.snapshots.length}`} />
                 <InfoBlock label="Reports" value={`${appState.reportExports.length}`} />
               </div>
+            </Card>
+
+            <Card title="Phase 12 analytics" subtitle="Customer segments, branch performance, delivery confidence, returns, credit risk, and pricing health.">
+              {analyticsPayload ? (
+                <div className="space-y-5">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <InfoBlock label="Active customers" value={`${analyticsPayload.totals.activeCustomers}`} />
+                    <InfoBlock label="Repeat purchase rate" value={`${analyticsPayload.totals.repeatPurchaseRate}%`} />
+                    <InfoBlock label="Delivery success" value={`${analyticsPayload.delivery.deliverySuccessRate}%`} />
+                    <InfoBlock label="Return rate" value={`${analyticsPayload.delivery.returnRate}%`} />
+                    <InfoBlock label="Average order value" value={`Rs. ${analyticsPayload.totals.averageOrderValue.toLocaleString()}`} />
+                    <InfoBlock label="Credit exposure" value={`Rs. ${analyticsPayload.totals.creditExposure.toLocaleString()}`} />
+                    <InfoBlock label="Branches active" value={`${analyticsPayload.branches.activeBranches}/${analyticsPayload.branches.totalBranches}`} />
+                    <InfoBlock label="Watch customers" value={`${analyticsPayload.credit.buckets.watch + analyticsPayload.credit.buckets.blockSoon + analyticsPayload.credit.buckets.blocked}`} />
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-3xl bg-stone-950 p-5 text-stone-50 shadow-xl shadow-stone-200">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Top customers</div>
+                      <div className="mt-4 space-y-3">
+                        {analyticsPayload.customers.topCustomers.length > 0 ? (
+                          analyticsPayload.customers.topCustomers.map((customer) => (
+                            <div key={customer.customerId} className="rounded-2xl bg-white/10 px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-extrabold text-white">{customer.customerName}</div>
+                                  <div className="text-xs text-stone-300">
+                                    {customer.orderCount} orders | {customer.tier} | {customer.riskState}
+                                  </div>
+                                </div>
+                                <div className="text-right text-sm font-bold text-amber-200">
+                                  Rs. {customer.revenue.toLocaleString()}
+                                </div>
+                              </div>
+                              <div className="mt-2 text-xs text-stone-300">
+                                Outstanding Rs. {customer.outstandingBalance.toLocaleString()}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No customer activity yet." />
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Branch performance</div>
+                      <div className="mt-4 space-y-3">
+                        {analyticsPayload.branches.performance.length > 0 ? (
+                          analyticsPayload.branches.performance.map((branch) => (
+                            <div key={branch.branchId} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-extrabold text-stone-950">{branch.branchName}</div>
+                                  <div className="text-xs text-stone-500">
+                                    {branch.orderCount} orders | {branch.deliverySuccessRate}% success
+                                  </div>
+                                </div>
+                                <div className="text-right text-sm font-bold text-stone-800">
+                                  Rs. {branch.revenue.toLocaleString()}
+                                </div>
+                              </div>
+                              <div className="mt-2 text-xs text-stone-500">
+                                Returns {branch.returnCount} | Failures {branch.failureCount} | Avg Rs. {branch.averageOrderValue.toLocaleString()}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No branch analytics yet." />
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Credit risk</div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <InfoBlock label="Healthy" value={`${analyticsPayload.credit.buckets.healthy}`} />
+                        <InfoBlock label="Watch" value={`${analyticsPayload.credit.buckets.watch}`} />
+                        <InfoBlock label="Block soon" value={`${analyticsPayload.credit.buckets.blockSoon}`} />
+                        <InfoBlock label="Blocked" value={`${analyticsPayload.credit.buckets.blocked}`} />
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {analyticsPayload.credit.watchCustomers.length > 0 ? (
+                          analyticsPayload.credit.watchCustomers.slice(0, 4).map((customer) => (
+                            <div key={customer.customerId} className="rounded-2xl bg-white px-4 py-3 text-sm">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="font-semibold text-stone-950">{customer.customerName}</div>
+                                <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{customer.riskState}</div>
+                              </div>
+                              <div className="mt-1 text-xs text-stone-500">
+                                Exposure Rs. {customer.outstandingBalance.toLocaleString()} / Limit Rs. {customer.creditLimit.toLocaleString()}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No watch customers." />
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Pricing mix</div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <InfoBlock label="Prepaid" value={`${analyticsPayload.pricing.orderMix.prepaid}`} />
+                        <InfoBlock label="Part pay" value={`${analyticsPayload.pricing.orderMix.partPay}`} />
+                        <InfoBlock label="Credit" value={`${analyticsPayload.pricing.orderMix.credit}`} />
+                        <InfoBlock label="Active rules" value={`${analyticsPayload.pricing.pricingRules}`} />
+                      </div>
+                      <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-600">
+                        Branch overrides {analyticsPayload.pricing.branchOverrides} | Customer overrides {analyticsPayload.pricing.customerOverrides} | Avg ticket Rs. {analyticsPayload.pricing.averageOrderValue.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <GateMessage message="Analytics are building now. Refresh after the snapshot is ready." />
+              )}
             </Card>
 
             <Card title="Phase 9 notification ops" subtitle="Template-based updates with channel priority, retry, and customer preference awareness.">

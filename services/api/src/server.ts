@@ -2936,6 +2936,7 @@ app.get('/analytics/overview', authenticate, requireAnyRole(['owner', 'manager',
     latest: analyticsSnapshots[0] ?? null,
     snapshots: analyticsSnapshots,
     rollups: kpiRollups,
+    insights: analyticsSnapshots[0]?.payloadJson ?? null,
   });
 });
 
@@ -2946,6 +2947,7 @@ app.post('/analytics/rebuild', authenticate, requireAnyRole(['owner', 'manager',
     latest: analyticsSnapshots[0] ?? null,
     snapshots: analyticsSnapshots,
     rollups: kpiRollups,
+    insights: analyticsSnapshots[0]?.payloadJson ?? null,
   });
 });
 
@@ -5311,9 +5313,38 @@ function rebuildOperationalState() {
 
 function refreshPhase3DerivedState() {
   const now = new Date().toISOString();
+  const today = todayIsoDate();
+  const activeOrders = orders.filter((order) => order.status !== 'cancelled');
+  const customerOrderCounts = new Map<string, number>();
+  const customerRevenue = new Map<string, number>();
+  const branchOrderCounts = new Map<string, number>();
+  const branchRevenue = new Map<string, number>();
+  const branchFailureCounts = new Map<string, number>();
+  const branchReturnCounts = new Map<string, number>();
+  const paymentModeCounts = new Map<PaymentMode, number>();
+  const returnedOrderIds = new Set(returnRecords.map((record) => record.orderId));
+  const returnedQuantity = returnRecords.reduce((sum, record) => sum + record.quantity, 0);
+
+  for (const order of activeOrders) {
+    customerOrderCounts.set(order.customerId, (customerOrderCounts.get(order.customerId) ?? 0) + 1);
+    customerRevenue.set(order.customerId, (customerRevenue.get(order.customerId) ?? 0) + order.amountTotal);
+
+    const branchKey = order.branchId?.trim() || 'unassigned';
+    branchOrderCounts.set(branchKey, (branchOrderCounts.get(branchKey) ?? 0) + 1);
+    branchRevenue.set(branchKey, (branchRevenue.get(branchKey) ?? 0) + order.amountTotal);
+    paymentModeCounts.set(order.paymentMode, (paymentModeCounts.get(order.paymentMode) ?? 0) + 1);
+
+    if (order.status === 'failed_delivery' || order.status === 'partial_delivery') {
+      branchFailureCounts.set(branchKey, (branchFailureCounts.get(branchKey) ?? 0) + 1);
+    }
+    if (returnedOrderIds.has(order.id)) {
+      branchReturnCounts.set(branchKey, (branchReturnCounts.get(branchKey) ?? 0) + 1);
+    }
+  }
+
   const nextHealthSnapshots: AccountHealthSnapshot[] = customers
     .map((customer) => {
-      const customerOrders = orders.filter((entry) => entry.customerId === customer.id && entry.status !== 'cancelled');
+      const customerOrders = activeOrders.filter((entry) => entry.customerId === customer.id);
       const failedDeliveries = customerOrders.filter((entry) => entry.status === 'failed_delivery').length;
       const partialDeliveries = customerOrders.filter((entry) => entry.status === 'partial_delivery').length;
       const openCases = supportCases.filter(
@@ -5355,16 +5386,169 @@ function refreshPhase3DerivedState() {
 
   accountHealthSnapshots.splice(0, accountHealthSnapshots.length, ...nextHealthSnapshots);
 
-  const today = todayIsoDate();
   const totalRevenue = orders.reduce((sum, order) => sum + order.amountTotal, 0);
   const deliveredCount = orders.filter((order) => order.status === 'delivered').length;
   const fulfilledCount = orders.filter((order) => ['delivered', 'partial_delivery', 'failed_delivery'].includes(order.status)).length;
   const deliverySuccessRate = fulfilledCount === 0 ? 0 : Math.round((deliveredCount / fulfilledCount) * 100);
-  const repeatCustomers = customers.filter((customer) => orders.filter((order) => order.customerId === customer.id).length > 1).length;
+  const repeatCustomers = customers.filter((customer) => (customerOrderCounts.get(customer.id) ?? 0) > 1).length;
+  const activeCustomers = customers.filter((customer) => (customerOrderCounts.get(customer.id) ?? 0) > 0).length;
   const supportOpenCount = supportCases.filter((entry) => !['closed'].includes(entry.status)).length;
   const activeStandingOrderCount = standingOrders.filter((entry) => entry.status === 'active').length;
   const watchCustomers = customers.filter((customer) => ['watch', 'block_soon', 'blocked'].includes(customer.riskState)).length;
   const openRouteCount = slots.filter((slot) => slot.status !== 'locked').length;
+  const failedDeliveryCount = orders.filter((order) => order.status === 'failed_delivery').length;
+  const partialDeliveryCount = orders.filter((order) => order.status === 'partial_delivery').length;
+  const repeatPurchaseRate = customers.length === 0 ? 0 : Math.round((repeatCustomers / customers.length) * 100);
+  const returnOrderRate = fulfilledCount === 0 ? 0 : Math.round((returnRecords.length / fulfilledCount) * 100);
+  const creditExposure = customers.reduce((sum, customer) => sum + customer.outstandingBalance, 0);
+  const averageOrderValue = activeOrders.length === 0 ? 0 : Math.round(totalRevenue / activeOrders.length);
+  const creditUtilization = customers.length === 0
+    ? 0
+    : Math.round(
+        (customers.reduce((sum, customer) => {
+          if (customer.creditLimit <= 0) {
+            return sum;
+          }
+          return sum + Math.min(1, customer.outstandingBalance / customer.creditLimit);
+        }, 0) / customers.length) * 100,
+      );
+
+  const topCustomers = customers
+    .map((customer) => {
+      const orderCount = customerOrderCounts.get(customer.id) ?? 0;
+      const revenue = customerRevenue.get(customer.id) ?? 0;
+      return {
+        customerId: customer.id,
+        customerName: customer.name,
+        orderCount,
+        revenue,
+        outstandingBalance: customer.outstandingBalance,
+        riskState: customer.riskState,
+        tier: customer.tier,
+      };
+    })
+    .filter((entry) => entry.orderCount > 0 || entry.revenue > 0)
+    .sort((left, right) => right.revenue - left.revenue || right.orderCount - left.orderCount)
+    .slice(0, 5);
+
+  const customerSegments = {
+    newCustomers: customers.filter((customer) => (customerOrderCounts.get(customer.id) ?? 0) === 1).length,
+    repeatCustomers,
+    dormantCustomers: customers.filter((customer) => (customerOrderCounts.get(customer.id) ?? 0) === 0).length,
+    highValueCustomers: customers.filter((customer) => (customerRevenue.get(customer.id) ?? 0) >= 10000).length,
+    watchCustomers,
+  };
+
+  const branchPerformance = customerBranches
+    .map((branch) => {
+      const orderCount = branchOrderCounts.get(branch.id) ?? 0;
+      const revenue = branchRevenue.get(branch.id) ?? 0;
+      const returnCount = branchReturnCounts.get(branch.id) ?? 0;
+      const failureCount = branchFailureCounts.get(branch.id) ?? 0;
+      const successBase = orderCount === 0 ? 0 : Math.max(0, orderCount - failureCount);
+      return {
+        branchId: branch.id,
+        branchName: branch.name,
+        customerId: branch.customerId,
+        status: branch.status,
+        orderCount,
+        revenue,
+        returnCount,
+        failureCount,
+        deliverySuccessRate: orderCount === 0 ? 0 : Math.round((successBase / orderCount) * 100),
+        averageOrderValue: orderCount === 0 ? 0 : Math.round(revenue / orderCount),
+      };
+    })
+    .sort((left, right) => right.revenue - left.revenue || right.orderCount - left.orderCount);
+
+  const paymentMix = {
+    prepaid: paymentModeCounts.get('prepaid') ?? 0,
+    partPay: paymentModeCounts.get('part-pay') ?? 0,
+    credit: paymentModeCounts.get('credit') ?? 0,
+  };
+
+  const deliveryQuality = {
+    delivered: deliveredCount,
+    partialDeliveries: partialDeliveryCount,
+    failedDeliveries: failedDeliveryCount,
+    returnedOrders: returnRecords.length,
+    returnedQuantity,
+    deliverySuccessRate,
+    returnRate: returnOrderRate,
+  };
+
+  const riskBuckets = {
+    healthy: customers.filter((customer) => customer.riskState === 'healthy').length,
+    watch: customers.filter((customer) => customer.riskState === 'watch').length,
+    blockSoon: customers.filter((customer) => customer.riskState === 'block_soon').length,
+    blocked: customers.filter((customer) => customer.riskState === 'blocked').length,
+  };
+
+  const pricingCoverage = customerPricingRules.filter((rule) => rule.status === 'active');
+  const analyticsPayload = {
+    snapshotTime: now,
+    totals: {
+      customers: customers.length,
+      activeCustomers,
+      repeatCustomers,
+      repeatPurchaseRate,
+      orders: orders.length,
+      revenue: totalRevenue,
+      averageOrderValue,
+      supportOpen: supportOpenCount,
+      activeStandingOrders: activeStandingOrderCount,
+      watchCustomers,
+      deliverySuccessRate,
+      returnOrders: returnRecords.length,
+      returnQuantity: returnedQuantity,
+      failedDeliveries: failedDeliveryCount,
+      partialDeliveries: partialDeliveryCount,
+      creditExposure,
+    },
+    customers: {
+      segments: customerSegments,
+      topCustomers,
+    },
+    branches: {
+      totalBranches: customerBranches.length,
+      activeBranches: customerBranches.filter((branch) => branch.status === 'active').length,
+      performance: branchPerformance,
+    },
+    capacity: {
+      booked: capacities.reduce((sum, capacity) => sum + capacity.bookedQuantity, 0),
+      total: capacities.reduce((sum, capacity) => sum + capacity.capacity, 0),
+      fillRate:
+        capacities.reduce((sum, capacity) => sum + capacity.capacity, 0) === 0
+          ? 0
+          : Math.round(
+              (capacities.reduce((sum, capacity) => sum + capacity.bookedQuantity, 0) /
+                capacities.reduce((sum, capacity) => sum + capacity.capacity, 0)) *
+                100,
+            ),
+    },
+    delivery: deliveryQuality,
+    credit: {
+      exposure: creditExposure,
+      utilizationRate: creditUtilization,
+      buckets: riskBuckets,
+      watchCustomers: customers
+        .filter((customer) => ['watch', 'block_soon', 'blocked'].includes(customer.riskState))
+        .map((customer) => ({
+          customerId: customer.id,
+          customerName: customer.name,
+          riskState: customer.riskState,
+          outstandingBalance: customer.outstandingBalance,
+          creditLimit: customer.creditLimit,
+        })),
+    },
+    pricing: {
+      orderMix: paymentMix,
+      pricingRules: pricingCoverage.length,
+      branchOverrides: pricingCoverage.filter((rule) => rule.branchId !== null).length,
+      customerOverrides: pricingCoverage.filter((rule) => rule.customerId !== null).length,
+      averageOrderValue,
+    },
+  };
 
   kpiRollups.splice(
     0,
@@ -5425,33 +5609,21 @@ function refreshPhase3DerivedState() {
       value: repeatCustomers,
       createdAt: now,
     },
+    {
+      id: `kpi_returns_${today}`,
+      metricCode: 'returned_orders',
+      serviceDate: today,
+      value: returnRecords.length,
+      createdAt: now,
+    },
+    {
+      id: `kpi_credit_${today}`,
+      metricCode: 'credit_exposure',
+      serviceDate: today,
+      value: creditExposure,
+      createdAt: now,
+    },
   );
-
-  const analyticsPayload = {
-    snapshotTime: now,
-    totals: {
-      customers: customers.length,
-      orders: orders.length,
-      revenue: totalRevenue,
-      supportOpen: supportOpenCount,
-      activeStandingOrders: activeStandingOrderCount,
-      watchCustomers,
-      repeatCustomers,
-      deliverySuccessRate,
-    },
-    capacity: {
-      booked: capacities.reduce((sum, capacity) => sum + capacity.bookedQuantity, 0),
-      total: capacities.reduce((sum, capacity) => sum + capacity.capacity, 0),
-      fillRate:
-        capacities.reduce((sum, capacity) => sum + capacity.capacity, 0) === 0
-          ? 0
-          : Math.round(
-              (capacities.reduce((sum, capacity) => sum + capacity.bookedQuantity, 0) /
-                capacities.reduce((sum, capacity) => sum + capacity.capacity, 0)) *
-                100,
-            ),
-    },
-  };
 
   analyticsSnapshots.splice(0, analyticsSnapshots.length, {
     id: `analytics_${today}_${analyticsSnapshots.length + 1}`,

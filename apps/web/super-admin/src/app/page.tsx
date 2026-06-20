@@ -661,6 +661,20 @@ type AnalyticsSnapshotPayload = {
       grossMarginRate: number;
     }>;
   };
+  risk: {
+    totalCustomers: number;
+    healthyCustomers: number;
+    watchCustomers: number;
+    blockSoonCustomers: number;
+    blockedCustomers: number;
+    topRiskCustomers: Array<{
+      customerId: string;
+      customerName: string;
+      riskState: string;
+      riskScore: number;
+      outstandingBalance: number;
+    }>;
+  };
 };
 
 type CustomerRequest = {
@@ -3825,6 +3839,35 @@ export default function Home() {
                             ))}
                           </div>
                         </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5 lg:col-span-2">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Risk snapshots</div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <InfoBlock label="Healthy" value={`${analyticsPayload.risk.healthyCustomers}`} />
+                        <InfoBlock label="Watch" value={`${analyticsPayload.risk.watchCustomers}`} />
+                        <InfoBlock label="Block soon" value={`${analyticsPayload.risk.blockSoonCustomers}`} />
+                        <InfoBlock label="Blocked" value={`${analyticsPayload.risk.blockedCustomers}`} />
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {analyticsPayload.risk.topRiskCustomers.length > 0 ? (
+                          analyticsPayload.risk.topRiskCustomers.map((customer) => (
+                            <div key={customer.customerId} className="rounded-2xl bg-white px-4 py-3 text-sm">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="font-semibold text-stone-950">{customer.customerName}</div>
+                                <div className="text-xs uppercase tracking-[0.18em] text-stone-500">
+                                  {customer.riskState} | {customer.riskScore}
+                                </div>
+                              </div>
+                              <div className="mt-1 text-xs text-stone-500">
+                                Exposure Rs. {customer.outstandingBalance.toLocaleString()}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <GateMessage message="No risk snapshot data yet." />
+                        )}
                       </div>
                     </div>
 

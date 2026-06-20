@@ -386,6 +386,26 @@ type MarginSnapshot = {
   updatedAt: string;
 };
 
+type RiskSnapshot = {
+  id: string;
+  serviceDate: string;
+  status: 'draft' | 'ready' | 'published';
+  totalCustomers: number;
+  healthyCustomers: number;
+  watchCustomers: number;
+  blockSoonCustomers: number;
+  blockedCustomers: number;
+  topRiskCustomers: Array<{
+    customerId: string;
+    customerName: string;
+    riskState: string;
+    riskScore: number;
+    outstandingBalance: number;
+  }>;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type KpiRollup = {
   id: string;
   metricCode: string;
@@ -508,6 +528,7 @@ type ApiStateSnapshot = {
   segmentDefinitions: SegmentDefinition[];
   segmentMemberships: SegmentMembership[];
   marginSnapshots: MarginSnapshot[];
+  riskSnapshots: RiskSnapshot[];
   customerRequests: CustomerRequest[];
   savedAddresses: SavedAddress[];
   reportExports: ReportExport[];
@@ -1030,6 +1051,7 @@ let segmentDefinitions: SegmentDefinition[] = [
 ];
 let segmentMemberships: SegmentMembership[] = [];
 let marginSnapshots: MarginSnapshot[] = [];
+let riskSnapshots: RiskSnapshot[] = [];
 let customerRequests: CustomerRequest[] = [];
 let savedAddresses: SavedAddress[] = [
   {
@@ -5072,6 +5094,11 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
       grossMarginRate: snapshot.grossMarginRate ?? 0,
       updatedAt: snapshot.updatedAt ?? snapshot.createdAt,
     })),
+    riskSnapshots: (parsed.riskSnapshots ?? riskSnapshots).map((snapshot) => ({
+      ...snapshot,
+      status: snapshot.status ?? 'ready',
+      updatedAt: snapshot.updatedAt ?? snapshot.createdAt,
+    })),
     customerRequests: parsed.customerRequests ?? customerRequests,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
@@ -5160,6 +5187,7 @@ async function persistState() {
     segmentDefinitions,
     segmentMemberships,
     marginSnapshots,
+    riskSnapshots,
     customerRequests,
     savedAddresses,
     reportExports,
@@ -5268,6 +5296,7 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   segmentDefinitions.splice(0, segmentDefinitions.length, ...snapshot.segmentDefinitions);
   segmentMemberships.splice(0, segmentMemberships.length, ...snapshot.segmentMemberships);
   marginSnapshots.splice(0, marginSnapshots.length, ...snapshot.marginSnapshots);
+  riskSnapshots.splice(0, riskSnapshots.length, ...snapshot.riskSnapshots);
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
@@ -5714,6 +5743,31 @@ function refreshPhase3DerivedState() {
     blocked: customers.filter((customer) => customer.riskState === 'blocked').length,
   };
 
+  const topRiskCustomers = [...nextHealthSnapshots]
+    .sort((left, right) => right.riskScore - left.riskScore)
+    .slice(0, 5)
+    .map((snapshot) => ({
+      customerId: snapshot.customerId,
+      customerName: customers.find((customer) => customer.id === snapshot.customerId)?.name ?? snapshot.customerId,
+      riskState: snapshot.healthState,
+      riskScore: snapshot.riskScore,
+      outstandingBalance: snapshot.exposure,
+    }));
+
+  riskSnapshots.splice(0, riskSnapshots.length, {
+    id: `risk_${today}`,
+    serviceDate: today,
+    status: 'ready',
+    totalCustomers: customers.length,
+    healthyCustomers: riskBuckets.healthy,
+    watchCustomers: riskBuckets.watch,
+    blockSoonCustomers: riskBuckets.blockSoon,
+    blockedCustomers: riskBuckets.blocked,
+    topRiskCustomers,
+    createdAt: now,
+    updatedAt: now,
+  });
+
   const pricingCoverage = customerPricingRules.filter((rule) => rule.status === 'active');
   const marginByProduct = new Map<string, { revenue: number; estimatedCost: number; category: string; productName: string }>();
   const marginByBranch = new Map<string, { revenue: number; estimatedCost: number; branchName: string }>();
@@ -5848,6 +5902,14 @@ function refreshPhase3DerivedState() {
           outstandingBalance: customer.outstandingBalance,
           creditLimit: customer.creditLimit,
         })),
+    },
+    risk: {
+      totalCustomers: customers.length,
+      healthyCustomers: riskBuckets.healthy,
+      watchCustomers: riskBuckets.watch,
+      blockSoonCustomers: riskBuckets.blockSoon,
+      blockedCustomers: riskBuckets.blocked,
+      topRiskCustomers,
     },
     pricing: {
       orderMix: paymentMix,

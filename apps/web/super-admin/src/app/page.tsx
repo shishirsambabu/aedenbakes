@@ -638,6 +638,29 @@ type AnalyticsSnapshotPayload = {
     customerOverrides: number;
     averageOrderValue: number;
   };
+  margin: {
+    revenue: number;
+    estimatedCost: number;
+    grossMargin: number;
+    grossMarginRate: number;
+    productBreakdown: Array<{
+      productId: string;
+      productName: string;
+      category: string;
+      revenue: number;
+      estimatedCost: number;
+      grossMargin: number;
+      grossMarginRate: number;
+    }>;
+    branchBreakdown: Array<{
+      branchId: string;
+      branchName: string;
+      revenue: number;
+      estimatedCost: number;
+      grossMargin: number;
+      grossMarginRate: number;
+    }>;
+  };
 };
 
 type CustomerRequest = {
@@ -3755,6 +3778,53 @@ export default function Home() {
                       </div>
                       <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-600">
                         Branch overrides {analyticsPayload.pricing.branchOverrides} | Customer overrides {analyticsPayload.pricing.customerOverrides} | Avg ticket Rs. {analyticsPayload.pricing.averageOrderValue.toLocaleString()}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-950 p-5 text-stone-50 lg:col-span-2">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Margin intelligence</div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <InfoBlock label="Revenue" value={`Rs. ${analyticsPayload.margin.revenue.toLocaleString()}`} />
+                        <InfoBlock label="Estimated cost" value={`Rs. ${analyticsPayload.margin.estimatedCost.toLocaleString()}`} />
+                        <InfoBlock label="Gross margin" value={`Rs. ${analyticsPayload.margin.grossMargin.toLocaleString()}`} />
+                        <InfoBlock label="Margin rate" value={`${analyticsPayload.margin.grossMarginRate}%`} />
+                      </div>
+                      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                        <div className="rounded-2xl bg-white/10 p-4">
+                          <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-300">Top products by margin</div>
+                          <div className="mt-3 space-y-2">
+                            {analyticsPayload.margin.productBreakdown.slice(0, 4).map((product) => (
+                              <div key={product.productId} className="rounded-2xl bg-white/10 px-4 py-3 text-sm">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <div className="font-semibold text-white">{product.productName}</div>
+                                    <div className="text-xs text-stone-300">{product.category}</div>
+                                  </div>
+                                  <div className="text-right text-xs text-stone-300">{product.grossMarginRate}%</div>
+                                </div>
+                                <div className="mt-1 text-xs text-stone-300">
+                                  Margin Rs. {product.grossMargin.toLocaleString()} | Revenue Rs. {product.revenue.toLocaleString()}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-2xl bg-white/10 p-4">
+                          <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-300">Top branches by margin</div>
+                          <div className="mt-3 space-y-2">
+                            {analyticsPayload.margin.branchBreakdown.slice(0, 4).map((branch) => (
+                              <div key={branch.branchId} className="rounded-2xl bg-white/10 px-4 py-3 text-sm">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="font-semibold text-white">{branch.branchName}</div>
+                                  <div className="text-xs text-stone-300">{branch.grossMarginRate}%</div>
+                                </div>
+                                <div className="mt-1 text-xs text-stone-300">
+                                  Margin Rs. {branch.grossMargin.toLocaleString()} | Revenue Rs. {branch.revenue.toLocaleString()}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
 

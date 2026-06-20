@@ -353,6 +353,39 @@ type SegmentMembership = {
   createdAt: string;
 };
 
+type MarginProductBreakdown = {
+  productId: string;
+  productName: string;
+  category: string;
+  revenue: number;
+  estimatedCost: number;
+  grossMargin: number;
+  grossMarginRate: number;
+};
+
+type MarginBranchBreakdown = {
+  branchId: string;
+  branchName: string;
+  revenue: number;
+  estimatedCost: number;
+  grossMargin: number;
+  grossMarginRate: number;
+};
+
+type MarginSnapshot = {
+  id: string;
+  serviceDate: string;
+  status: 'draft' | 'ready' | 'published';
+  revenue: number;
+  estimatedCost: number;
+  grossMargin: number;
+  grossMarginRate: number;
+  productBreakdown: MarginProductBreakdown[];
+  branchBreakdown: MarginBranchBreakdown[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 type KpiRollup = {
   id: string;
   metricCode: string;
@@ -474,6 +507,7 @@ type ApiStateSnapshot = {
   kpiRollups: KpiRollup[];
   segmentDefinitions: SegmentDefinition[];
   segmentMemberships: SegmentMembership[];
+  marginSnapshots: MarginSnapshot[];
   customerRequests: CustomerRequest[];
   savedAddresses: SavedAddress[];
   reportExports: ReportExport[];
@@ -995,6 +1029,7 @@ let segmentDefinitions: SegmentDefinition[] = [
   },
 ];
 let segmentMemberships: SegmentMembership[] = [];
+let marginSnapshots: MarginSnapshot[] = [];
 let customerRequests: CustomerRequest[] = [];
 let savedAddresses: SavedAddress[] = [
   {
@@ -5031,6 +5066,12 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     kpiRollups: parsed.kpiRollups ?? kpiRollups,
     segmentDefinitions: parsed.segmentDefinitions ?? segmentDefinitions,
     segmentMemberships: parsed.segmentMemberships ?? segmentMemberships,
+    marginSnapshots: (parsed.marginSnapshots ?? marginSnapshots).map((snapshot) => ({
+      ...snapshot,
+      status: snapshot.status ?? 'ready',
+      grossMarginRate: snapshot.grossMarginRate ?? 0,
+      updatedAt: snapshot.updatedAt ?? snapshot.createdAt,
+    })),
     customerRequests: parsed.customerRequests ?? customerRequests,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
@@ -5118,6 +5159,7 @@ async function persistState() {
     kpiRollups,
     segmentDefinitions,
     segmentMemberships,
+    marginSnapshots,
     customerRequests,
     savedAddresses,
     reportExports,
@@ -5225,6 +5267,7 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   kpiRollups.splice(0, kpiRollups.length, ...snapshot.kpiRollups);
   segmentDefinitions.splice(0, segmentDefinitions.length, ...snapshot.segmentDefinitions);
   segmentMemberships.splice(0, segmentMemberships.length, ...snapshot.segmentMemberships);
+  marginSnapshots.splice(0, marginSnapshots.length, ...snapshot.marginSnapshots);
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
@@ -5436,6 +5479,11 @@ function refreshPhase3DerivedState() {
   const now = new Date().toISOString();
   const today = todayIsoDate();
   const activeOrders = orders.filter((order) => order.status !== 'cancelled');
+  const estimatedCostRateByCategory = new Map<string, number>([
+    ['Laminated', 0.58],
+    ['Bread', 0.52],
+    ['Pastry', 0.54],
+  ]);
   const customerOrderCounts = new Map<string, number>();
   const customerRevenue = new Map<string, number>();
   const branchOrderCounts = new Map<string, number>();
@@ -5667,6 +5715,82 @@ function refreshPhase3DerivedState() {
   };
 
   const pricingCoverage = customerPricingRules.filter((rule) => rule.status === 'active');
+  const marginByProduct = new Map<string, { revenue: number; estimatedCost: number; category: string; productName: string }>();
+  const marginByBranch = new Map<string, { revenue: number; estimatedCost: number; branchName: string }>();
+  let estimatedCostTotal = 0;
+
+  for (const order of activeOrders) {
+    const branch = customerBranches.find((entry) => entry.id === order.branchId);
+    const branchKey = branch?.id ?? 'unassigned';
+    const branchName = branch?.name ?? 'Unassigned';
+    for (const item of order.items) {
+      const product = products.find((entry) => entry.id === item.productId);
+      const categoryRate = estimatedCostRateByCategory.get(product?.category ?? '') ?? 0.55;
+      const revenue = item.quantity * item.unitPrice;
+      const estimatedCost = Math.round(revenue * categoryRate);
+      estimatedCostTotal += estimatedCost;
+
+      const productEntry = marginByProduct.get(item.productId) ?? {
+        revenue: 0,
+        estimatedCost: 0,
+        category: product?.category ?? 'Unknown',
+        productName: product?.name ?? item.productId,
+      };
+      productEntry.revenue += revenue;
+      productEntry.estimatedCost += estimatedCost;
+      marginByProduct.set(item.productId, productEntry);
+
+      const branchEntry = marginByBranch.get(branchKey) ?? {
+        revenue: 0,
+        estimatedCost: 0,
+        branchName,
+      };
+      branchEntry.revenue += revenue;
+      branchEntry.estimatedCost += estimatedCost;
+      marginByBranch.set(branchKey, branchEntry);
+    }
+  }
+
+  const marginProductBreakdown: MarginProductBreakdown[] = [...marginByProduct.entries()]
+    .map(([productId, entry]) => ({
+      productId,
+      productName: entry.productName,
+      category: entry.category,
+      revenue: entry.revenue,
+      estimatedCost: entry.estimatedCost,
+      grossMargin: entry.revenue - entry.estimatedCost,
+      grossMarginRate: entry.revenue === 0 ? 0 : Math.round(((entry.revenue - entry.estimatedCost) / entry.revenue) * 100),
+    }))
+    .sort((left, right) => right.grossMargin - left.grossMargin);
+
+  const marginBranchBreakdown: MarginBranchBreakdown[] = [...marginByBranch.entries()]
+    .map(([branchId, entry]) => ({
+      branchId,
+      branchName: entry.branchName,
+      revenue: entry.revenue,
+      estimatedCost: entry.estimatedCost,
+      grossMargin: entry.revenue - entry.estimatedCost,
+      grossMarginRate: entry.revenue === 0 ? 0 : Math.round(((entry.revenue - entry.estimatedCost) / entry.revenue) * 100),
+    }))
+    .sort((left, right) => right.grossMargin - left.grossMargin);
+
+  const totalMargin = totalRevenue - estimatedCostTotal;
+  const marginRate = totalRevenue === 0 ? 0 : Math.round((totalMargin / totalRevenue) * 100);
+
+  marginSnapshots.splice(0, marginSnapshots.length, {
+    id: `margin_${today}`,
+    serviceDate: today,
+    status: 'ready',
+    revenue: totalRevenue,
+    estimatedCost: estimatedCostTotal,
+    grossMargin: totalMargin,
+    grossMarginRate: marginRate,
+    productBreakdown: marginProductBreakdown,
+    branchBreakdown: marginBranchBreakdown,
+    createdAt: now,
+    updatedAt: now,
+  });
+
   const analyticsPayload = {
     snapshotTime: now,
     totals: {
@@ -5731,6 +5855,14 @@ function refreshPhase3DerivedState() {
       branchOverrides: pricingCoverage.filter((rule) => rule.branchId !== null).length,
       customerOverrides: pricingCoverage.filter((rule) => rule.customerId !== null).length,
       averageOrderValue,
+    },
+    margin: {
+      revenue: totalRevenue,
+      estimatedCost: estimatedCostTotal,
+      grossMargin: totalMargin,
+      grossMarginRate: marginRate,
+      productBreakdown: marginProductBreakdown,
+      branchBreakdown: marginBranchBreakdown,
     },
   };
 

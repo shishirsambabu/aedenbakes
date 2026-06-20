@@ -280,6 +280,8 @@ export interface CustomerDashboardResponse {
   creditLedgerEntries: CreditLedgerEntry[];
   substitutionRules: SubstitutionRule[];
   substitutionEvents: SubstitutionEvent[];
+  documents?: CustomerDocument[];
+  invoiceExports?: InvoiceExport[];
   catalog: {
     products: Product[];
     capacities: ProductDayCapacity[];
@@ -421,6 +423,31 @@ export interface StandingOrderChange {
   };
 }
 
+export interface CustomerDocument {
+  id: string;
+  customerId: string;
+  documentType: 'gst' | 'credit' | 'proof' | 'invoice' | 'other';
+  status: 'draft' | 'uploaded' | 'verified' | 'archived';
+  title: string;
+  fileName: string;
+  mimeType: string;
+  downloadUrl: string;
+  tags: string[];
+  createdAt: string;
+  verifiedAt: string | null;
+}
+
+export interface InvoiceExport {
+  id: string;
+  customerId: string;
+  invoiceNumber: string;
+  fileName: string;
+  status: 'ready' | 'downloaded' | 'emailed' | 'archived';
+  amount: number;
+  createdAt: string;
+  downloadUrl: string;
+}
+
 export interface Customer360Response {
   customer: CustomerAccount;
   auth: CustomerPortalAuthRecord | null;
@@ -432,6 +459,8 @@ export interface Customer360Response {
   standingOrders: StandingOrder[];
   recurrenceRules: RecurrenceRule[];
   standingOrderChanges: StandingOrderChange[];
+  documents?: CustomerDocument[];
+  invoiceExports?: InvoiceExport[];
   orders: Order[];
 }
 

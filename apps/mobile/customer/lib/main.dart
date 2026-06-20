@@ -352,6 +352,8 @@ class _AedenJourneyState extends State<AedenJourney> {
   final List<_CreditLedgerEntry> _creditLedgerEntries = [];
   final List<_SubstitutionRule> _substitutionRules = [];
   final List<_SubstitutionEvent> _substitutionEvents = [];
+  final List<_CustomerDocument> _documents = [];
+  final List<_InvoiceExport> _invoiceExports = [];
   final List<_CustomerNotification> _notifications = [];
   final List<_CustomerBranch> _branches = [
     const _CustomerBranch(
@@ -748,6 +750,8 @@ class _AedenJourneyState extends State<AedenJourney> {
     final existingBranches = List<_CustomerBranch>.from(_branches);
     final existingUsers = List<_CustomerUser>.from(_customerUsers);
     final existingOrders = List<_Order>.from(_orders);
+    final existingDocuments = List<_CustomerDocument>.from(_documents);
+    final existingInvoices = List<_InvoiceExport>.from(_invoiceExports);
     final branches = (payload['branches'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(
@@ -898,6 +902,39 @@ class _AedenJourneyState extends State<AedenJourney> {
         .where((entry) => entry.id.isNotEmpty)
         .toList(growable: false);
 
+    final documents = (payload['documents'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _CustomerDocument(
+            id: entry['id'] as String? ?? '',
+            title: entry['title'] as String? ?? '',
+            fileName: entry['fileName'] as String? ?? '',
+            documentType: entry['documentType'] as String? ?? 'other',
+            status: entry['status'] as String? ?? 'uploaded',
+            createdAt: entry['createdAt'] as String? ?? '',
+            verifiedAt: entry['verifiedAt'] as String?,
+            downloadUrl: entry['downloadUrl'] as String? ?? '',
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    final invoices = (payload['invoiceExports'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _InvoiceExport(
+            id: entry['id'] as String? ?? '',
+            invoiceNumber: entry['invoiceNumber'] as String? ?? '',
+            fileName: entry['fileName'] as String? ?? '',
+            status: entry['status'] as String? ?? 'ready',
+            amount: (entry['amount'] as num?)?.round() ?? 0,
+            createdAt: entry['createdAt'] as String? ?? '',
+            downloadUrl: entry['downloadUrl'] as String? ?? '',
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
     if (!mounted) {
       return;
     }
@@ -926,6 +963,12 @@ class _AedenJourneyState extends State<AedenJourney> {
       _substitutionEvents
         ..clear()
         ..addAll(substitutionEvents);
+      _documents
+        ..clear()
+        ..addAll(documents.isNotEmpty ? documents : existingDocuments);
+      _invoiceExports
+        ..clear()
+        ..addAll(invoices.isNotEmpty ? invoices : existingInvoices);
       if (_branches.isNotEmpty && !_branches.any((branch) => branch.id == _selectedBranchId)) {
         _selectedBranchId = _branches.first.id;
       }
@@ -2994,6 +3037,121 @@ class _AedenJourneyState extends State<AedenJourney> {
                     onPressed: () => _showMessage('Settings open here'),
                     child: const Text('Manage profile'),
                   ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _PremiumSectionCard(
+              title: 'Documents and invoices',
+              subtitle: 'GST, proof, and invoice copies are available from the same account view.',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _PremiumBadge(text: '${_documents.length} documents'),
+                      _PremiumBadge(text: '${_invoiceExports.length} invoices'),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ..._documents.take(3).map(
+                        (document) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(color: AedenPalette.line),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: AedenPalette.goldSoft,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(Icons.description_rounded, color: AedenPalette.brown),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        document.title,
+                                        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '${document.documentType.toUpperCase()} · ${document.status}',
+                                        style: Theme.of(context).textTheme.bodySmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () => _showMessage('Downloading ${document.fileName}'),
+                                  child: const Text('Download'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ..._invoiceExports.take(3).map(
+                        (invoice) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(color: AedenPalette.line),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: AedenPalette.ink,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(Icons.receipt_long_rounded, color: Colors.white),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        invoice.invoiceNumber,
+                                        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        'Rs. ${invoice.amount.toString()} · ${invoice.status}',
+                                        style: Theme.of(context).textTheme.bodySmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () => _showMessage('Downloading ${invoice.fileName}'),
+                                  child: const Text('Download'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                 ],
               ),
             ),
@@ -5830,6 +5988,48 @@ class _CustomerNotification {
   final String channel;
   final String status;
   final String createdAt;
+}
+
+class _CustomerDocument {
+  const _CustomerDocument({
+    required this.id,
+    required this.title,
+    required this.fileName,
+    required this.documentType,
+    required this.status,
+    required this.createdAt,
+    required this.downloadUrl,
+    this.verifiedAt,
+  });
+
+  final String id;
+  final String title;
+  final String fileName;
+  final String documentType;
+  final String status;
+  final String createdAt;
+  final String downloadUrl;
+  final String? verifiedAt;
+}
+
+class _InvoiceExport {
+  const _InvoiceExport({
+    required this.id,
+    required this.invoiceNumber,
+    required this.fileName,
+    required this.status,
+    required this.amount,
+    required this.createdAt,
+    required this.downloadUrl,
+  });
+
+  final String id;
+  final String invoiceNumber;
+  final String fileName;
+  final String status;
+  final int amount;
+  final String createdAt;
+  final String downloadUrl;
 }
 
 class _CustomerBranch {

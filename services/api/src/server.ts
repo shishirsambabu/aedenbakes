@@ -281,6 +281,40 @@ type ReportExport = {
   payloadJson: Record<string, unknown>;
 };
 
+type DocumentRecord = {
+  id: string;
+  customerId: string;
+  documentType: 'gst' | 'credit' | 'proof' | 'invoice' | 'other';
+  status: 'draft' | 'uploaded' | 'verified' | 'archived';
+  title: string;
+  fileName: string;
+  mimeType: string;
+  downloadUrl: string;
+  tags: string[];
+  createdAt: string;
+  verifiedAt: string | null;
+};
+
+type DocumentAccessLog = {
+  id: string;
+  documentId: string;
+  customerId: string;
+  actorRole: AuthRole | 'system';
+  action: 'view' | 'download' | 'verify' | 'archive';
+  createdAt: string;
+};
+
+type InvoiceExport = {
+  id: string;
+  customerId: string;
+  invoiceNumber: string;
+  fileName: string;
+  status: 'ready' | 'downloaded' | 'emailed' | 'archived';
+  amount: number;
+  createdAt: string;
+  downloadUrl: string;
+};
+
 type ApiStateSnapshot = {
   customers: typeof customers;
   customerBranches: CustomerBranch[];
@@ -322,6 +356,9 @@ type ApiStateSnapshot = {
   customerRequests: CustomerRequest[];
   savedAddresses: SavedAddress[];
   reportExports: ReportExport[];
+  documents: DocumentRecord[];
+  documentAccessLogs: DocumentAccessLog[];
+  invoiceExports: InvoiceExport[];
 };
 
 const authUsers: AuthRecord[] = allowDemoAccounts
@@ -409,6 +446,27 @@ database.exec(`
     customer_id TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS invoice_exports (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS document_access_logs (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
   );
 `);
 recordMigration('database-initialized');
@@ -743,6 +801,47 @@ let savedAddresses: SavedAddress[] = [
   },
 ];
 let reportExports: ReportExport[] = [];
+let documents: DocumentRecord[] = [
+  {
+    id: 'doc_gst_cafe_nook',
+    customerId: 'cust_cafe_nook',
+    documentType: 'gst',
+    status: 'verified',
+    title: 'GST certificate',
+    fileName: 'cafe-nook-gst.pdf',
+    mimeType: 'application/pdf',
+    downloadUrl: '/documents/doc_gst_cafe_nook/download',
+    tags: ['gst', 'kyc'],
+    createdAt: '2026-06-19T08:35:00+05:30',
+    verifiedAt: '2026-06-19T09:00:00+05:30',
+  },
+  {
+    id: 'doc_invoice_cafe_nook_2401',
+    customerId: 'cust_cafe_nook',
+    documentType: 'invoice',
+    status: 'uploaded',
+    title: 'Invoice 2401',
+    fileName: 'invoice-2401.pdf',
+    mimeType: 'application/pdf',
+    downloadUrl: '/documents/doc_invoice_cafe_nook_2401/download',
+    tags: ['invoice', 'accounts'],
+    createdAt: '2026-06-19T10:15:00+05:30',
+    verifiedAt: null,
+  },
+];
+let documentAccessLogs: DocumentAccessLog[] = [];
+let invoiceExports: InvoiceExport[] = [
+  {
+    id: 'invexp_cafe_nook_2401',
+    customerId: 'cust_cafe_nook',
+    invoiceNumber: 'INV-2401',
+    fileName: 'INV-2401.pdf',
+    status: 'ready',
+    amount: 12640,
+    createdAt: '2026-06-19T10:15:00+05:30',
+    downloadUrl: '/invoices/invexp_cafe_nook_2401/download',
+  },
+];
 const processedDeliveryEventIds = new Set<string>();
 let erpSyncStatus: ErpSyncStatus = {
   provider: 'vasy',
@@ -2800,6 +2899,160 @@ app.post('/reports/export', authenticate, requireAnyRole(['owner', 'manager', 'a
   res.status(201).json({ report, reportExports });
 });
 
+app.get('/documents', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
+  res.json({ documents });
+});
+
+app.get('/customer/documents', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session missing customer id' });
+    return;
+  }
+
+  res.json({
+    documents: documents.filter((document) => document.customerId === customerId),
+    invoiceExports: invoiceExports.filter((invoice) => invoice.customerId === customerId),
+  });
+});
+
+app.post('/documents', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const { customerId, documentType = 'other', title, fileName, mimeType = 'application/pdf', tags = [] } = req.body as {
+    customerId?: string;
+    documentType?: DocumentRecord['documentType'];
+    title?: string;
+    fileName?: string;
+    mimeType?: string;
+    tags?: string[];
+  };
+  if (!customerId || !title?.trim() || !fileName?.trim()) {
+    res.status(400).json({ error: 'customerId, title, and fileName are required' });
+    return;
+  }
+
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const id = `doc_${crypto.randomUUID()}`;
+  const document: DocumentRecord = {
+    id,
+    customerId,
+    documentType,
+    status: 'uploaded',
+    title: title.trim(),
+    fileName: fileName.trim(),
+    mimeType,
+    downloadUrl: `/documents/${id}/download`,
+    tags,
+    createdAt: new Date().toISOString(),
+    verifiedAt: null,
+  };
+  documents.unshift(document);
+  persistStateSoon();
+  res.status(201).json({ document, documents });
+});
+
+app.post('/documents/:id/verify', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const document = documents.find((entry) => entry.id === id);
+  if (!document) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  document.status = 'verified';
+  document.verifiedAt = new Date().toISOString();
+  documentAccessLogs.unshift({
+    id: `doclog_${crypto.randomUUID()}`,
+    documentId: document.id,
+    customerId: document.customerId,
+    actorRole: req.session?.user.role ?? 'system',
+    action: 'verify',
+    createdAt: document.verifiedAt,
+  });
+  persistStateSoon();
+  res.json({ document, documents });
+});
+
+app.get('/documents/:id/download', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts', 'customer']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const document = documents.find((entry) => entry.id === id);
+  const invoice = invoiceExports.find((entry) => entry.id === id);
+  if (!document && !invoice) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  const customerId = document?.customerId ?? invoice?.customerId ?? req.session?.user.customerId ?? '';
+  documentAccessLogs.unshift({
+    id: `doclog_${crypto.randomUUID()}`,
+    documentId: id,
+    customerId,
+    actorRole: req.session?.user.role ?? 'system',
+    action: 'download',
+    createdAt: new Date().toISOString(),
+  });
+  if (invoice) {
+    invoice.status = 'downloaded';
+  }
+  persistStateSoon();
+  res.json({ document, invoice });
+});
+
+app.get('/invoices', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
+  res.json({ invoiceExports });
+});
+
+app.post('/invoices/export', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const { customerId, amount = 0, invoiceNumber, fileName } = req.body as {
+    customerId?: string;
+    amount?: number;
+    invoiceNumber?: string;
+    fileName?: string;
+  };
+  if (!customerId || !invoiceNumber?.trim()) {
+    res.status(400).json({ error: 'customerId and invoiceNumber are required' });
+    return;
+  }
+
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+
+  const invoiceId = `invexp_${crypto.randomUUID()}`;
+  const invoiceExport: InvoiceExport = {
+    id: invoiceId,
+    customerId,
+    invoiceNumber: invoiceNumber.trim(),
+    fileName: fileName?.trim() || `${invoiceNumber.trim()}.pdf`,
+    status: 'ready',
+    amount,
+    createdAt: new Date().toISOString(),
+    downloadUrl: `/documents/${invoiceId}/download`,
+  };
+  invoiceExports.unshift(invoiceExport);
+  persistStateSoon();
+  res.status(201).json({ invoiceExport, invoiceExports });
+});
+
+app.post('/invoices/:id/archive', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const invoice = invoiceExports.find((entry) => entry.id === id);
+  if (!invoice) {
+    res.status(404).json({ error: 'Invoice export not found' });
+    return;
+  }
+
+  invoice.status = 'archived';
+  persistStateSoon();
+  res.json({ invoice, invoiceExports });
+});
+
 app.get('/storage/status', (_req, res) => {
   const r2Configured = Boolean(
     process.env.R2_ACCOUNT_ID?.trim() &&
@@ -3546,6 +3799,8 @@ function buildCustomerDashboard(customerId: string): CustomerDashboardResponse {
       (rule) => rule.status === 'active' && (rule.customerId === null || rule.customerId === customer.id),
     ),
     substitutionEvents: substitutionEvents.filter((event) => event.customerId === customer.id),
+    documents: documents.filter((document) => document.customerId === customer.id),
+    invoiceExports: invoiceExports.filter((invoice) => invoice.customerId === customer.id),
     catalog: {
       products,
       capacities,
@@ -3572,6 +3827,8 @@ function buildCustomer360(customerId: string): Customer360Response {
   const standingOrdersForCustomer = standingOrders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const recurrenceRulesForCustomer = recurrenceRules.filter((entry) => entry.customerId === null || entry.customerId === customer.id);
   const standingOrderChangesForCustomer = standingOrderChanges.filter((entry) => entry.customerId === customer.id);
+  const documentsForCustomer = documents.filter((document) => document.customerId === customer.id);
+  const invoiceExportsForCustomer = invoiceExports.filter((invoice) => invoice.customerId === customer.id);
   const timeline = buildCustomerTimeline(customer.id);
   return {
     customer,
@@ -3595,6 +3852,8 @@ function buildCustomer360(customerId: string): Customer360Response {
     standingOrders: standingOrdersForCustomer,
     recurrenceRules: recurrenceRulesForCustomer,
     standingOrderChanges: standingOrderChangesForCustomer,
+    documents: documentsForCustomer,
+    invoiceExports: invoiceExportsForCustomer,
     branches,
     users,
     orders: orders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
@@ -4245,6 +4504,9 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     customerRequests: parsed.customerRequests ?? customerRequests,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     reportExports: parsed.reportExports ?? reportExports,
+    documents: parsed.documents ?? documents,
+    documentAccessLogs: parsed.documentAccessLogs ?? documentAccessLogs,
+    invoiceExports: parsed.invoiceExports ?? invoiceExports,
   };
 }
 
@@ -4314,6 +4576,9 @@ async function persistState() {
     customerRequests,
     savedAddresses,
     reportExports,
+    documents,
+    documentAccessLogs,
+    invoiceExports,
   };
 
   database
@@ -4408,6 +4673,9 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
+  documents.splice(0, documents.length, ...snapshot.documents);
+  documentAccessLogs.splice(0, documentAccessLogs.length, ...snapshot.documentAccessLogs);
+  invoiceExports.splice(0, invoiceExports.length, ...snapshot.invoiceExports);
   processedDeliveryEventIds.clear();
   for (const eventId of snapshot.deliveryEventIds) {
     processedDeliveryEventIds.add(eventId);

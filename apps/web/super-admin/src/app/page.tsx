@@ -450,6 +450,31 @@ type NotificationPreference = {
   updatedAt: string;
 };
 
+type DocumentRecord = {
+  id: string;
+  customerId: string;
+  documentType: 'gst' | 'credit' | 'proof' | 'invoice' | 'other';
+  status: 'draft' | 'uploaded' | 'verified' | 'archived';
+  title: string;
+  fileName: string;
+  mimeType: string;
+  downloadUrl: string;
+  tags: string[];
+  createdAt: string;
+  verifiedAt: string | null;
+};
+
+type InvoiceExport = {
+  id: string;
+  customerId: string;
+  invoiceNumber: string;
+  fileName: string;
+  status: 'ready' | 'downloaded' | 'emailed' | 'archived';
+  amount: number;
+  createdAt: string;
+  downloadUrl: string;
+};
+
 type AccountHealthSnapshot = {
   id: string;
   customerId: string;
@@ -556,6 +581,8 @@ type AppState = {
     templates: NotificationTemplate[];
     preferences: NotificationPreference[];
   };
+  documents: DocumentRecord[];
+  invoiceExports: InvoiceExport[];
   accountHealth: {
     snapshots: AccountHealthSnapshot[];
     actions: AccountAction[];
@@ -594,6 +621,8 @@ const initialAppState: AppState = {
   substitutionEvents: [],
   erpContractPreview: null,
   notifications: { jobs: [], deliveries: [], templates: [], preferences: [] },
+  documents: [],
+  invoiceExports: [],
   accountHealth: { snapshots: [], actions: [] },
   analytics: { latest: null, snapshots: [], rollups: [] },
   customerRequests: [],
@@ -644,6 +673,13 @@ export default function Home() {
   const [notificationChannel, setNotificationChannel] = useState<'in_app' | 'sms' | 'whatsapp' | 'email'>('whatsapp');
   const [notificationSubject, setNotificationSubject] = useState('Order confirmed');
   const [notificationBody, setNotificationBody] = useState('We have locked your order and the bakery team is preparing your batch.');
+  const [documentCustomerId, setDocumentCustomerId] = useState('cust_cafe_nook');
+  const [documentTitle, setDocumentTitle] = useState('GST certificate');
+  const [documentFileName, setDocumentFileName] = useState('gst-certificate.pdf');
+  const [documentType, setDocumentType] = useState<DocumentRecord['documentType']>('gst');
+  const [invoiceCustomerId, setInvoiceCustomerId] = useState('cust_cafe_nook');
+  const [invoiceNumber, setInvoiceNumber] = useState('INV-2402');
+  const [invoiceAmount, setInvoiceAmount] = useState('12640');
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -678,13 +714,15 @@ export default function Home() {
         supportRes,
         standingRes,
         commercialRes,
-        notificationsRes,
-        accountHealthRes,
-        analyticsRes,
-        customerRequestsRes,
-        savedAddressesRes,
-        alertRulesRes,
-        reportsRes,
+      notificationsRes,
+      accountHealthRes,
+      analyticsRes,
+      customerRequestsRes,
+      savedAddressesRes,
+      alertRulesRes,
+      reportsRes,
+      documentsRes,
+      invoicesRes,
       ] = await Promise.all([
         sessionToken
           ? fetchWithTimeout(`${API_BASE_URL}/customers`, { headers: authHeaders(sessionToken) })
@@ -706,6 +744,8 @@ export default function Home() {
         sessionToken ? fetchWithTimeout(`${API_BASE_URL}/customer/addresses`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/alert-rules`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/reports`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/documents`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/invoices`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
       ]);
 
       if (!customersRes || !catalogRes || !ordersRes || !customersRes.ok || !catalogRes.ok || !ordersRes.ok) {
@@ -741,6 +781,8 @@ export default function Home() {
       let alertRules: AlertRule[] = [];
       let alertEvents: AlertEvent[] = [];
       let reportExports: ReportExport[] = [];
+      let documents: DocumentRecord[] = [];
+      let invoiceExports: InvoiceExport[] = [];
 
       if (operationsRes) {
         if (!operationsRes.ok) {
@@ -853,6 +895,22 @@ export default function Home() {
         reportExports = reportsJson.reportExports ?? [];
       }
 
+      if (documentsRes) {
+        if (!documentsRes.ok) {
+          throw new Error('Could not refresh documents.');
+        }
+        const documentsJson = await documentsRes.json();
+        documents = documentsJson.documents ?? [];
+      }
+
+      if (invoicesRes) {
+        if (!invoicesRes.ok) {
+          throw new Error('Could not refresh invoices.');
+        }
+        const invoicesJson = await invoicesRes.json();
+        invoiceExports = invoicesJson.invoiceExports ?? [];
+      }
+
       if (sessionToken && canSyncErp) {
         const contractResponse = await fetchWithTimeout(`${API_BASE_URL}/erp/vasy/contract`, {
           headers: authHeaders(sessionToken),
@@ -891,6 +949,8 @@ export default function Home() {
         alertRules,
         alertEvents,
         reportExports,
+        documents,
+        invoiceExports,
       });
     },
     [session?.permissions.canSyncErp, session?.user.role, token],
@@ -958,6 +1018,8 @@ export default function Home() {
     substitutionEvents,
     erpContractPreview,
     notifications,
+    documents,
+    invoiceExports,
   } = appState;
   const latestEvents = auditEvents.slice(0, 4);
   const selectedCustomerOrders = selectedCustomer?.orders ?? [];
@@ -1086,6 +1148,34 @@ export default function Home() {
     } catch (error) {
       setActionMessage(error instanceof Error ? error.message : 'Could not retry notification.');
     }
+  }
+
+  async function createDocumentRecord() {
+    await performAction(
+      '/documents',
+      {
+        customerId: documentCustomerId,
+        documentType,
+        title: documentTitle,
+        fileName: documentFileName,
+        mimeType: 'application/pdf',
+        tags: [documentType, 'support'],
+      },
+      'Document added to vault.',
+    );
+  }
+
+  async function exportInvoiceRecord() {
+    await performAction(
+      '/invoices/export',
+      {
+        customerId: invoiceCustomerId,
+        invoiceNumber,
+        amount: Number(invoiceAmount) || 0,
+        fileName: `${invoiceNumber}.pdf`,
+      },
+      'Invoice export created.',
+    );
   }
 
   async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = 6000) {
@@ -3490,6 +3580,121 @@ export default function Home() {
                     {line}
                   </div>
                 ))}
+              </div>
+            </Card>
+
+            <Card title="Phase 10 documents and invoices" subtitle="Document vault, invoice exports, and access-aware support records.">
+              <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <InfoBlock label="Documents" value={`${documents.length}`} />
+                    <InfoBlock label="Invoices" value={`${invoiceExports.length}`} />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Document customer</div>
+                      <select
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={documentCustomerId}
+                        onChange={(event) => setDocumentCustomerId(event.target.value)}
+                      >
+                        {customers.map((customer) => (
+                          <option key={customer.id} value={customer.id}>
+                            {customer.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Document type</div>
+                      <select
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={documentType}
+                        onChange={(event) => setDocumentType(event.target.value as DocumentRecord['documentType'])}
+                      >
+                        <option value="gst">GST</option>
+                        <option value="credit">Credit</option>
+                        <option value="proof">Proof</option>
+                        <option value="invoice">Invoice</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Document title</div>
+                      <input
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={documentTitle}
+                        onChange={(event) => setDocumentTitle(event.target.value)}
+                      />
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">File name</div>
+                      <input
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={documentFileName}
+                        onChange={(event) => setDocumentFileName(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <button
+                      type="button"
+                      onClick={createDocumentRecord}
+                      className="rounded-2xl bg-stone-950 px-5 py-3 text-sm font-extrabold text-white"
+                    >
+                      Add document
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exportInvoiceRecord}
+                      className="rounded-2xl border border-stone-300 bg-white px-5 py-3 text-sm font-extrabold text-stone-700"
+                    >
+                      Export invoice
+                    </button>
+                    <label className="space-y-2 text-sm">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Invoice amount</div>
+                      <input
+                        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3"
+                        value={invoiceAmount}
+                        onChange={(event) => setInvoiceAmount(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="rounded-3xl bg-stone-50 p-4">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Recent documents</div>
+                    <div className="mt-3 space-y-2">
+                      {documents.slice(0, 5).map((document) => (
+                        <div key={document.id} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-semibold text-stone-950">{document.title}</div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{document.status}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-stone-500">
+                            {document.documentType} | {document.fileName}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-3xl bg-stone-50 p-4">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Recent invoices</div>
+                    <div className="mt-3 space-y-2">
+                      {invoiceExports.slice(0, 5).map((invoice) => (
+                        <div key={invoice.id} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-semibold text-stone-950">{invoice.invoiceNumber}</div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{invoice.status}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-stone-500">
+                            Rs. {invoice.amount.toLocaleString()} | {invoice.fileName}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
             </Card>
 

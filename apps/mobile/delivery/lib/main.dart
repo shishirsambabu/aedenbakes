@@ -47,6 +47,11 @@ class _DeliveryShellState extends State<DeliveryShell> {
   bool _loading = true;
   String? _error;
   String? _token;
+  String _manifestStatus = 'draft';
+  String _manifestNote = 'Generated from live route load.';
+  int _manifestRouteCount = 0;
+  int _queuedServerCount = 0;
+  final List<_QueuedDeliveryAction> _queuedActions = [];
 
   List<_DeliveryTask> _tasks = [
     _DeliveryTask(
@@ -183,6 +188,7 @@ class _DeliveryShellState extends State<DeliveryShell> {
     }
 
     final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    final manifest = payload['manifest'] as Map<String, dynamic>? ?? const {};
     final routes = (payload['routes'] as List<dynamic>? ?? const []);
     final tasks = <_DeliveryTask>[];
     for (final route in routes) {
@@ -213,120 +219,234 @@ class _DeliveryShellState extends State<DeliveryShell> {
     if (mounted) {
       setState(() {
         _tasks = tasks;
+        _manifestStatus = manifest['status'] as String? ?? 'draft';
+        _manifestNote = manifest['note'] as String? ?? 'Generated from live route load.';
+        _manifestRouteCount = (manifest['routeCount'] as num?)?.toInt() ?? tasks.length;
+        _queuedServerCount = (payload['outboxCount'] as num?)?.toInt() ?? 0;
         _error = null;
       });
     }
   }
 
-  Future<void> _sendWriteback(
-    _DeliveryTask task,
-    String action,
-    String note,
-    String statusLabel,
-    Color accent,
-  ) async {
-    final token = _token;
-    if (token == null) {
-      throw Exception('Missing delivery session token');
+  Future<void> _queueOrSendDeliveryAction(_QueuedDeliveryAction action) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_apiBaseUrl/delivery/writeback'),
+        headers: _authHeaders(),
+        body: jsonEncode({
+          'events': [action.toJson()],
+        }),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception('Writeback failed with status ${response.statusCode}');
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _tasks = _tasks
+            .map(
+              (entry) => entry.orderId == action.orderId
+                  ? entry.copyWith(
+                      status: action.statusLabel,
+                      accent: action.accent,
+                    )
+                  : entry,
+            )
+            .toList(growable: false);
+        _queuedActions.removeWhere((queued) => queued.eventId == action.eventId);
+      });
+      await _refreshTasks();
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _queuedActions.removeWhere((queued) => queued.eventId == action.eventId);
+        _queuedActions.add(action);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Queued offline: ${action.label} for ${action.orderId}')),
+      );
     }
+  }
 
-    final eventId = '${action}_${task.orderId}_${DateTime.now().millisecondsSinceEpoch}';
-    final response = await http.post(
-      Uri.parse('$_apiBaseUrl/delivery/writeback'),
-      headers: _authHeaders(),
-      body: jsonEncode({
-        'events': [
-          {
-            'eventId': eventId,
-            'orderId': task.orderId,
-            'slotId': task.slotId,
-            'action': action,
-            'note': note,
-          },
-        ],
-      }),
+  Future<void> _openProofDialog(_DeliveryTask task, DeliveryActionKind kind) async {
+    final noteController = TextEditingController(
+      text: kind == DeliveryActionKind.pod
+          ? 'Proof of delivery captured from the driver lane.'
+          : kind == DeliveryActionKind.failure
+              ? 'Delivery could not be completed at the door.'
+              : 'Return captured while the parcel was still traceable.',
+    );
+    final signatureController = TextEditingController(text: 'Receiver signature');
+    final photoController = TextEditingController(text: 'photo://doorstep/${task.orderId}');
+    final reasonController = TextEditingController(text: 'customer_unavailable');
+    final returnController = TextEditingController(text: '1');
+    final result = await showDialog<_QueuedDeliveryAction>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(
+            kind == DeliveryActionKind.pod
+                ? 'Capture POD'
+                : kind == DeliveryActionKind.failure
+                    ? 'Mark failure'
+                    : 'Capture return',
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: noteController,
+                  decoration: const InputDecoration(labelText: 'Note'),
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: signatureController,
+                  decoration: const InputDecoration(labelText: 'Signature name'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: photoController,
+                  decoration: const InputDecoration(labelText: 'Photo reference'),
+                ),
+                if (kind != DeliveryActionKind.pod) ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: reasonController,
+                    decoration: const InputDecoration(labelText: 'Reason code'),
+                  ),
+                ],
+                if (kind == DeliveryActionKind.returnCapture) ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: returnController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Return quantity'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final action = kind == DeliveryActionKind.pod
+                    ? 'pod_completed'
+                    : kind == DeliveryActionKind.failure
+                        ? 'delivery_failed'
+                        : 'return_captured';
+                Navigator.pop(
+                  context,
+                  _QueuedDeliveryAction(
+                    eventId: '${action}_${task.orderId}_${DateTime.now().millisecondsSinceEpoch}',
+                    orderId: task.orderId,
+                    slotId: task.slotId,
+                    action: action,
+                    note: noteController.text.trim(),
+                    capturedAt: DateTime.now().toIso8601String(),
+                    statusLabel: kind == DeliveryActionKind.pod
+                        ? 'Delivered'
+                        : kind == DeliveryActionKind.failure
+                            ? 'Failed'
+                            : 'Return captured',
+                    accent: kind == DeliveryActionKind.pod
+                        ? AedenPalette.green
+                        : kind == DeliveryActionKind.failure
+                            ? AedenPalette.red
+                            : AedenPalette.gold,
+                    signatureName: signatureController.text.trim(),
+                    photoUrl: photoController.text.trim(),
+                    reasonCode: reasonController.text.trim(),
+                    returnQuantity: int.tryParse(returnController.text.trim()) ?? 1,
+                  ),
+                );
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
     );
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Writeback failed with status ${response.statusCode}');
+    if (result != null) {
+      await _queueOrSendDeliveryAction(result);
     }
-
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _tasks = _tasks
-          .map(
-            (entry) => entry.orderId == task.orderId
-                ? entry.copyWith(status: statusLabel, accent: accent)
-                : entry,
-          )
-          .toList(growable: false);
-    });
-    await _refreshTasks();
   }
 
   void _markPodComplete(String orderId) {
     final task = _tasks.firstWhere((entry) => entry.orderId == orderId);
-    _sendWriteback(
-      task,
-      'pod_completed',
-      'Proof of delivery captured from the driver lane.',
-      'Delivered',
-      AedenPalette.green,
-    ).catchError((error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.toString())),
-        );
-      }
-    });
+    _openProofDialog(task, DeliveryActionKind.pod);
   }
 
   void _markFailed(String orderId) {
     final task = _tasks.firstWhere((entry) => entry.orderId == orderId);
-    _sendWriteback(
-      task,
-      'delivery_failed',
-      'Delivery could not be completed at the door.',
-      'Failed',
-      AedenPalette.red,
-    ).catchError((error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.toString())),
-        );
-      }
-    });
+    _openProofDialog(task, DeliveryActionKind.failure);
   }
 
   void _captureReturn(String orderId) {
     final task = _tasks.firstWhere((entry) => entry.orderId == orderId);
-    _sendWriteback(
-      task,
-      'return_captured',
-      'Return captured while the parcel was still traceable.',
-      'Return captured',
-      AedenPalette.gold,
-    ).catchError((error) {
+    _openProofDialog(task, DeliveryActionKind.returnCapture);
+  }
+
+  Future<void> _startRun() async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_apiBaseUrl/delivery/manifest/lock'),
+        headers: _authHeaders(),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception('Could not lock manifest.');
+      }
+      await _refreshTasks();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Manifest locked for the route.')),
+        );
+      }
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(error.toString())),
         );
       }
+    }
+  }
+
+  Future<void> _syncQueue() async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (_queuedActions.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('Nothing waiting in the local queue.')));
+      return;
+    }
+
+    final events = _queuedActions.map((action) => action.toJson()).toList(growable: false);
+    final response = await http.post(
+      Uri.parse('$_apiBaseUrl/delivery/writeback'),
+      headers: _authHeaders(),
+      body: jsonEncode({'events': events}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Queue sync failed with status ${response.statusCode}');
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _queuedActions.clear();
     });
-  }
-
-  void _startRun() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Run started for the current route.')),
-    );
-  }
-
-  void _syncQueue() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Queue sync queued for the next network sync.')),
-    );
+    await _refreshTasks();
+    if (!mounted) {
+      return;
+    }
+    messenger.showSnackBar(const SnackBar(content: Text('Queued delivery actions synced.')));
   }
 
   void _reviewNotes() {
@@ -365,6 +485,11 @@ class _DeliveryShellState extends State<DeliveryShell> {
         readyCount: _readyCount,
         routeCount: _routeCount,
         exceptionCount: _exceptionCount,
+        manifestStatus: _manifestStatus,
+        manifestNote: _manifestNote,
+        manifestRouteCount: _manifestRouteCount,
+        queuedServerCount: _queuedServerCount,
+        queuedLocalCount: _queuedActions.length,
         onStartRun: _startRun,
       ),
       _RouteSection(
@@ -378,6 +503,8 @@ class _DeliveryShellState extends State<DeliveryShell> {
         readyCount: _readyCount,
         routeCount: _routeCount,
         exceptionCount: _exceptionCount,
+        queuedServerCount: _queuedServerCount,
+        queuedLocalCount: _queuedActions.length,
         onSyncQueue: _syncQueue,
       ),
       _HandoffSection(
@@ -427,6 +554,11 @@ class _OverviewSection extends StatelessWidget {
     required this.readyCount,
     required this.routeCount,
     required this.exceptionCount,
+    required this.manifestStatus,
+    required this.manifestNote,
+    required this.manifestRouteCount,
+    required this.queuedServerCount,
+    required this.queuedLocalCount,
     required this.onStartRun,
   });
 
@@ -434,7 +566,12 @@ class _OverviewSection extends StatelessWidget {
   final int readyCount;
   final int routeCount;
   final int exceptionCount;
-  final VoidCallback onStartRun;
+  final String manifestStatus;
+  final String manifestNote;
+  final int manifestRouteCount;
+  final int queuedServerCount;
+  final int queuedLocalCount;
+  final Future<void> Function() onStartRun;
 
   @override
   Widget build(BuildContext context) {
@@ -454,9 +591,17 @@ class _OverviewSection extends StatelessWidget {
             subtitle:
                 'Route status, queue pressure, exceptions, and handoff actions in one place.',
             action: FilledButton(
-              onPressed: onStartRun,
+              onPressed: () => onStartRun(),
               child: const Text('Start run'),
             ),
+          ),
+          const SizedBox(height: 16),
+          _ManifestCard(
+            status: manifestStatus,
+            note: manifestNote,
+            routeCount: manifestRouteCount,
+            serverQueue: queuedServerCount,
+            localQueue: queuedLocalCount,
           ),
           const SizedBox(height: 16),
           _HeroCard(
@@ -563,6 +708,8 @@ class _QueueSection extends StatelessWidget {
     required this.readyCount,
     required this.routeCount,
     required this.exceptionCount,
+    required this.queuedServerCount,
+    required this.queuedLocalCount,
     required this.onSyncQueue,
   });
 
@@ -570,7 +717,9 @@ class _QueueSection extends StatelessWidget {
   final int readyCount;
   final int routeCount;
   final int exceptionCount;
-  final VoidCallback onSyncQueue;
+  final int queuedServerCount;
+  final int queuedLocalCount;
+  final Future<void> Function() onSyncQueue;
 
   @override
   Widget build(BuildContext context) {
@@ -582,7 +731,7 @@ class _QueueSection extends StatelessWidget {
           subtitle:
               'Ready stops, in-flight deliveries, and exception items waiting for attention.',
           action: FilledButton.tonal(
-            onPressed: onSyncQueue,
+            onPressed: () => onSyncQueue(),
             child: const Text('Sync queue'),
           ),
         ),
@@ -612,6 +761,16 @@ class _QueueSection extends StatelessWidget {
               const Text(
                 'Keep the queue short, keep proof current, and push exceptions immediately when they clear.',
                 style: TextStyle(color: AedenPalette.grey, height: 1.5),
+              ),
+              const SizedBox(height: 14),
+              _ManifestCard(
+                status: queuedServerCount > 0 ? 'server queue' : 'synced',
+                note: queuedServerCount > 0
+                    ? '$queuedServerCount events are waiting on the server replay guard.'
+                    : 'Server outbox is clear.',
+                routeCount: tasks.length,
+                serverQueue: queuedServerCount,
+                localQueue: queuedLocalCount,
               ),
               const SizedBox(height: 14),
               Row(
@@ -800,6 +959,60 @@ class _HeaderCard extends StatelessWidget {
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 140),
             child: action,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ManifestCard extends StatelessWidget {
+  const _ManifestCard({
+    required this.status,
+    required this.note,
+    required this.routeCount,
+    required this.serverQueue,
+    required this.localQueue,
+  });
+
+  final String status;
+  final String note;
+  final int routeCount;
+  final int serverQueue;
+  final int localQueue;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: AedenPalette.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Manifest $status',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              _Pill(label: '$routeCount routes', tone: AedenPalette.gold),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(note, style: const TextStyle(color: AedenPalette.grey, height: 1.4)),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _Pill(label: '$serverQueue server queued', tone: AedenPalette.red),
+              _Pill(label: '$localQueue local queued', tone: AedenPalette.goldBright),
+            ],
           ),
         ],
       ),
@@ -1400,6 +1613,66 @@ class _TaskChecklistCard extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+enum DeliveryActionKind { pod, failure, returnCapture }
+
+class _QueuedDeliveryAction {
+  const _QueuedDeliveryAction({
+    required this.eventId,
+    required this.orderId,
+    required this.slotId,
+    required this.action,
+    required this.note,
+    required this.capturedAt,
+    required this.statusLabel,
+    required this.accent,
+    this.signatureName,
+    this.photoUrl,
+    this.reasonCode,
+    this.returnQuantity,
+  });
+
+  final String eventId;
+  final String orderId;
+  final String slotId;
+  final String action;
+  final String note;
+  final String capturedAt;
+  final String statusLabel;
+  final Color accent;
+  final String? signatureName;
+  final String? photoUrl;
+  final String? reasonCode;
+  final int? returnQuantity;
+
+  String get label {
+    switch (action) {
+      case 'pod_completed':
+        return 'POD';
+      case 'delivery_failed':
+        return 'Failure';
+      case 'return_captured':
+        return 'Return';
+      default:
+        return action;
+    }
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'eventId': eventId,
+      'orderId': orderId,
+      'slotId': slotId,
+      'action': action,
+      'note': note,
+      'capturedAt': capturedAt,
+      if (signatureName != null && signatureName!.isNotEmpty) 'signatureName': signatureName,
+      if (photoUrl != null && photoUrl!.isNotEmpty) 'photoUrl': photoUrl,
+      if (reasonCode != null && reasonCode!.isNotEmpty) 'reasonCode': reasonCode,
+      if (returnQuantity != null) 'returnQuantity': returnQuantity,
+    };
   }
 }
 

@@ -136,6 +136,91 @@ type ApprovalRequest = {
 
 type DeliveryWritebackAction = 'pod_completed' | 'delivery_failed' | 'return_captured';
 
+type DeliveryManifest = {
+  id: string;
+  serviceDate: string;
+  status: 'draft' | 'locked' | 'dispatched' | 'completed';
+  routeCount: number;
+  note: string | null;
+  createdAt: string;
+  lockedAt: string | null;
+  dispatchedAt: string | null;
+  completedAt: string | null;
+};
+
+type DeliveryManifestStop = {
+  id: string;
+  manifestId: string;
+  slotId: string;
+  orderId: string;
+  stopNumber: number;
+  customerId: string;
+  customerName: string;
+  address: string;
+  status: 'pending' | 'reached' | 'completed' | 'failed' | 'returned';
+  proofStatus: 'pending' | 'captured' | 'verified';
+  note: string;
+  updatedAt: string;
+};
+
+type ProofOfDelivery = {
+  id: string;
+  manifestId: string;
+  stopId: string;
+  orderId: string;
+  signatureName: string | null;
+  photoUrl: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  capturedAt: string;
+};
+
+type DeliveryPhoto = {
+  id: string;
+  proofId: string;
+  orderId: string;
+  caption: string;
+  url: string;
+  createdAt: string;
+};
+
+type FailureReason = {
+  id: string;
+  orderId: string;
+  stopId: string;
+  code: 'customer_unavailable' | 'damaged' | 'wrong_address' | 'rescheduled' | 'other';
+  note: string;
+  createdAt: string;
+};
+
+type ReturnRecord = {
+  id: string;
+  orderId: string;
+  stopId: string;
+  quantity: number;
+  note: string;
+  createdAt: string;
+};
+
+type ReturnItem = {
+  id: string;
+  returnId: string;
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+};
+
+type EventOutbox = {
+  id: string;
+  eventId: string;
+  orderId: string;
+  action: DeliveryWritebackAction;
+  payloadJson: Record<string, unknown>;
+  status: 'queued' | 'accepted' | 'applied' | 'duplicate' | 'rejected';
+  createdAt: string;
+  processedAt: string | null;
+};
+
 type DeliveryWritebackEvent = {
   eventId: string;
   orderId: string;
@@ -143,6 +228,12 @@ type DeliveryWritebackEvent = {
   action: DeliveryWritebackAction;
   note: string;
   capturedAt: string;
+  signatureName?: string;
+  photoUrl?: string;
+  latitude?: number;
+  longitude?: number;
+  reasonCode?: FailureReason['code'];
+  returnQuantity?: number;
 };
 
 type SupportCaseMessageRecord = {
@@ -343,6 +434,14 @@ type ApiStateSnapshot = {
   sessions: Session[];
   approvals: ApprovalRequest[];
   deliveryEventIds: string[];
+  deliveryManifests: DeliveryManifest[];
+  deliveryManifestStops: DeliveryManifestStop[];
+  proofOfDelivery: ProofOfDelivery[];
+  deliveryPhotos: DeliveryPhoto[];
+  failureReasons: FailureReason[];
+  returnRecords: ReturnRecord[];
+  returnItems: ReturnItem[];
+  eventOutbox: EventOutbox[];
   notificationJobs: NotificationJob[];
   notificationDeliveries: NotificationDelivery[];
   notificationTemplates: NotificationTemplate[];
@@ -465,6 +564,64 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS document_access_logs (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS delivery_manifests (
+    id TEXT PRIMARY KEY,
+    service_date TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS delivery_manifest_stops (
+    id TEXT PRIMARY KEY,
+    manifest_id TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS proof_of_delivery (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS delivery_photos (
+    id TEXT PRIMARY KEY,
+    proof_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS failure_reasons (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS returns (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS return_items (
+    id TEXT PRIMARY KEY,
+    return_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS event_outbox (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    order_id TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
@@ -842,6 +999,14 @@ let invoiceExports: InvoiceExport[] = [
     downloadUrl: '/invoices/invexp_cafe_nook_2401/download',
   },
 ];
+let deliveryManifests: DeliveryManifest[] = [];
+let deliveryManifestStops: DeliveryManifestStop[] = [];
+let proofOfDelivery: ProofOfDelivery[] = [];
+let deliveryPhotos: DeliveryPhoto[] = [];
+let failureReasons: FailureReason[] = [];
+let returnRecords: ReturnRecord[] = [];
+let returnItems: ReturnItem[] = [];
+let eventOutbox: EventOutbox[] = [];
 const processedDeliveryEventIds = new Set<string>();
 let erpSyncStatus: ErpSyncStatus = {
   provider: 'vasy',
@@ -3096,40 +3261,70 @@ app.post('/production/batches/:id/unlock', authenticate, requireAnyRole(['owner'
 });
 
 app.get('/delivery/manifest', authenticate, requireAnyRole(['owner', 'manager', 'delivery']), (_req, res) => {
+  const manifest = getCurrentDeliveryManifest();
+  const snapshot = syncDeliveryManifestStops();
   res.json({
+    manifest,
     routes: slots.map((slot) => {
-      const routeOrders = orders.filter((order) => order.slotId === slot.id);
+      const routeStops = snapshot.stops.filter((stop) => stop.slotId === slot.id);
       return {
         slotId: slot.id,
         label: slot.label,
         zone: slot.zone,
-        orderCount: routeOrders.length,
-        completedOrders: routeOrders.filter((order) => order.status === 'delivered').length,
-        failedOrders: routeOrders.filter((order) => order.status === 'failed_delivery').length,
-        stops: routeOrders.map((order, index) => {
-          const customer = customers.find((entry) => entry.id === order.customerId);
-          return {
-            stopNumber: index + 1,
-            orderId: order.id,
-            customerName: customer?.name ?? order.customerId,
-            address:
-              savedAddresses.find((entry) => entry.customerId === order.customerId)?.addressLine ??
-              'Address unavailable',
-            slot: slot.label,
-            status: order.status,
-            note:
-              order.status === 'delivered'
-                ? 'Delivered and signed off.'
-                : order.status === 'failed_delivery'
-                  ? 'Delivery failed and needs follow-up.'
-                  : order.status === 'partial_delivery'
-                    ? 'Partial delivery with return.'
-                    : 'Ready for handoff.',
-          };
-        }),
+        orderCount: routeStops.length,
+        completedOrders: routeStops.filter((stop) => stop.status === 'completed').length,
+        failedOrders: routeStops.filter((stop) => stop.status === 'failed').length,
+        stops: routeStops.map((stop) => ({
+          stopNumber: stop.stopNumber,
+          orderId: stop.orderId,
+          customerName: stop.customerName,
+          address: stop.address,
+          slot: slot.label,
+          status: orders.find((order) => order.id === stop.orderId)?.status ?? 'confirmed',
+          proofStatus: stop.proofStatus,
+          note: stop.note,
+        })),
       };
     }),
+    stops: snapshot.stops,
+    proofOfDelivery,
+    deliveryPhotos,
+    failureReasons,
+    returnRecords,
+    returnItems,
+    eventOutbox,
+    outboxCount: eventOutbox.filter((entry) => entry.status === 'queued').length,
   });
+});
+
+app.post('/delivery/manifest/lock', authenticate, requireAnyRole(['owner', 'manager', 'delivery']), (_req, res) => {
+  const manifest = getCurrentDeliveryManifest();
+  const now = new Date().toISOString();
+  manifest.status = 'locked';
+  manifest.lockedAt = manifest.lockedAt ?? now;
+  syncDeliveryManifestStops();
+  persistStateSoon();
+  res.json({ manifest, routes: slots.length });
+});
+
+app.post('/delivery/manifest/dispatch', authenticate, requireAnyRole(['owner', 'manager', 'delivery']), (_req, res) => {
+  const manifest = getCurrentDeliveryManifest();
+  const now = new Date().toISOString();
+  manifest.status = 'dispatched';
+  manifest.dispatchedAt = manifest.dispatchedAt ?? now;
+  syncDeliveryManifestStops();
+  persistStateSoon();
+  res.json({ manifest, routes: slots.length });
+});
+
+app.post('/delivery/manifest/complete', authenticate, requireAnyRole(['owner', 'manager', 'delivery']), (_req, res) => {
+  const manifest = getCurrentDeliveryManifest();
+  const now = new Date().toISOString();
+  manifest.status = 'completed';
+  manifest.completedAt = now;
+  syncDeliveryManifestStops();
+  persistStateSoon();
+  res.json({ manifest, routes: slots.length });
 });
 
 app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager', 'delivery']), (req, res) => {
@@ -3148,6 +3343,7 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
   const acceptedEventIds: string[] = [];
   const rejectedEventIds: string[] = [];
   const duplicateEventIds: string[] = [];
+  const manifest = getCurrentDeliveryManifest();
 
   for (const event of events) {
     if (
@@ -3160,26 +3356,77 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
     ) {
       result.rejected += 1;
       rejectedEventIds.push(event?.eventId ?? `invalid_${result.rejected}`);
+      recordDeliveryOutbox({
+        eventId: event?.eventId ?? `invalid_${result.rejected}`,
+        orderId: event?.orderId ?? 'unknown',
+        action: event?.action ?? 'pod_completed',
+        status: 'rejected',
+        payloadJson: { reason: 'Invalid event payload', event: event ?? null },
+      });
       continue;
     }
 
     if (processedDeliveryEventIds.has(event.eventId)) {
       result.duplicates += 1;
       duplicateEventIds.push(event.eventId);
+      recordDeliveryOutbox({
+        eventId: event.eventId,
+        orderId: event.orderId,
+        action: event.action,
+        status: 'duplicate',
+        payloadJson: event,
+      });
       continue;
     }
 
     const order = orders.find((entry) => entry.id === event.orderId);
     if (!order || order.slotId !== event.slotId) {
       result.rejected += 1;
+      rejectedEventIds.push(event.eventId);
+      recordDeliveryOutbox({
+        eventId: event.eventId,
+        orderId: event.orderId,
+        action: event.action,
+        status: 'rejected',
+        payloadJson: { reason: 'Order missing or slot mismatch', event },
+      });
       continue;
     }
 
     processedDeliveryEventIds.add(event.eventId);
     acceptedEventIds.push(event.eventId);
+    const now = event.capturedAt || new Date().toISOString();
+    const stop = deliveryManifestStops.find((entry) => entry.manifestId === manifest.id && entry.orderId === order.id);
 
     if (event.action === 'pod_completed') {
       order.status = 'delivered';
+      if (stop) {
+        stop.status = 'completed';
+        stop.proofStatus = 'captured';
+        stop.updatedAt = now;
+      }
+      const proofId = `pod_${crypto.randomUUID()}`;
+      proofOfDelivery.unshift({
+        id: proofId,
+        manifestId: manifest.id,
+        stopId: stop?.id ?? `stop_${order.id}`,
+        orderId: order.id,
+        signatureName: event.signatureName ?? null,
+        photoUrl: event.photoUrl ?? null,
+        latitude: event.latitude ?? null,
+        longitude: event.longitude ?? null,
+        capturedAt: now,
+      });
+      if (event.photoUrl) {
+        deliveryPhotos.unshift({
+          id: `photo_${crypto.randomUUID()}`,
+          proofId,
+          orderId: order.id,
+          caption: event.note,
+          url: event.photoUrl,
+          createdAt: now,
+        });
+      }
       recordAudit({
         kind: 'delivery_pod_completed',
         actor: 'delivery',
@@ -3194,8 +3441,27 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
         correlationKey: `delivery-ok:${event.eventId}`,
         recipient: order.customerId,
       });
+      recordDeliveryOutbox({
+        eventId: event.eventId,
+        orderId: order.id,
+        action: event.action,
+        status: 'applied',
+        payloadJson: event,
+      });
     } else if (event.action === 'delivery_failed') {
       order.status = 'failed_delivery';
+      if (stop) {
+        stop.status = 'failed';
+        stop.updatedAt = now;
+      }
+      failureReasons.unshift({
+        id: `fail_${crypto.randomUUID()}`,
+        orderId: order.id,
+        stopId: stop?.id ?? `stop_${order.id}`,
+        code: event.reasonCode ?? 'other',
+        note: event.note,
+        createdAt: now,
+      });
       recordAudit({
         kind: 'delivery_failed',
         actor: 'delivery',
@@ -3210,8 +3476,41 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
         correlationKey: `delivery-failed:${event.eventId}`,
         recipient: order.customerId,
       });
+      recordDeliveryOutbox({
+        eventId: event.eventId,
+        orderId: order.id,
+        action: event.action,
+        status: 'applied',
+        payloadJson: event,
+      });
     } else {
-      order.status = 'partial_delivery';
+      const totalUnits = order.items.reduce((sum, item) => sum + item.quantity, 0);
+      const returnQuantity = Math.max(1, Math.min(event.returnQuantity ?? 1, totalUnits));
+      order.status = returnQuantity >= totalUnits ? 'failed_delivery' : 'partial_delivery';
+      if (stop) {
+        stop.status = 'returned';
+        stop.proofStatus = 'captured';
+        stop.updatedAt = now;
+      }
+      const returnId = `ret_${crypto.randomUUID()}`;
+      returnRecords.unshift({
+        id: returnId,
+        orderId: order.id,
+        stopId: stop?.id ?? `stop_${order.id}`,
+        quantity: returnQuantity,
+        note: event.note,
+        createdAt: now,
+      });
+      const firstItem = order.items[0];
+      if (firstItem) {
+        returnItems.unshift({
+          id: `ret_item_${crypto.randomUUID()}`,
+          returnId,
+          productId: firstItem.productId,
+          quantity: returnQuantity,
+          unitPrice: firstItem.unitPrice,
+        });
+      }
       recordAudit({
         kind: 'delivery_returned',
         actor: 'delivery',
@@ -3225,6 +3524,13 @@ app.post('/delivery/writeback', authenticate, requireAnyRole(['owner', 'manager'
         subject: `Order ${order.id} returned`,
         correlationKey: `delivery-return:${event.eventId}`,
         recipient: order.customerId,
+      });
+      recordDeliveryOutbox({
+        eventId: event.eventId,
+        orderId: order.id,
+        action: event.action,
+        status: 'applied',
+        payloadJson: { ...event, returnQuantity: event.returnQuantity ?? 1 },
       });
     }
 
@@ -3613,6 +3919,108 @@ function enqueueNotification(_input: {
     job,
     deliveries: [delivery],
   };
+}
+
+function getCurrentDeliveryManifest() {
+  const serviceDate = getZoneDate('Asia/Kolkata').date;
+  const now = new Date().toISOString();
+  let manifest = deliveryManifests.find((entry) => entry.serviceDate === serviceDate);
+  if (!manifest) {
+    manifest = {
+      id: `manifest_${serviceDate}`,
+      serviceDate,
+      status: 'draft',
+      routeCount: 0,
+      note: 'Generated from live route load.',
+      createdAt: now,
+      lockedAt: null,
+      dispatchedAt: null,
+      completedAt: null,
+    };
+    deliveryManifests.unshift(manifest);
+  }
+  return manifest;
+}
+
+function mapOrderStatusToStopStatus(status: OrderStatus): DeliveryManifestStop['status'] {
+  switch (status) {
+    case 'delivered':
+      return 'completed';
+    case 'partial_delivery':
+      return 'returned';
+    case 'failed_delivery':
+      return 'failed';
+    default:
+      return 'pending';
+  }
+}
+
+function syncDeliveryManifestStops() {
+  const manifest = getCurrentDeliveryManifest();
+  const now = new Date().toISOString();
+  const nextStops: DeliveryManifestStop[] = [];
+
+  for (const slot of slots) {
+    const routeOrders = orders.filter((order) => order.slotId === slot.id);
+    routeOrders.forEach((order, index) => {
+      const customer = customers.find((entry) => entry.id === order.customerId);
+      const address =
+        savedAddresses.find((entry) => entry.customerId === order.customerId)?.addressLine ??
+        customerAuthRecords.find((entry) => entry.customerId === order.customerId)?.defaultAddress ??
+        'Address unavailable';
+      const existingStop = deliveryManifestStops.find((stop) => stop.manifestId === manifest.id && stop.orderId === order.id);
+      const proof = proofOfDelivery.find((entry) => entry.orderId === order.id);
+      nextStops.push({
+        id: existingStop?.id ?? `stop_${order.id}`,
+        manifestId: manifest.id,
+        slotId: slot.id,
+        orderId: order.id,
+        stopNumber: index + 1,
+        customerId: order.customerId,
+        customerName: customer?.name ?? order.customerId,
+        address,
+        status: existingStop?.status ?? mapOrderStatusToStopStatus(order.status),
+        proofStatus: proof ? 'captured' : existingStop?.proofStatus ?? 'pending',
+        note:
+          order.status === 'delivered'
+            ? 'Delivered and signed off.'
+            : order.status === 'failed_delivery'
+              ? 'Delivery failed and needs follow-up.'
+              : order.status === 'partial_delivery'
+                ? 'Partial delivery with return.'
+                : 'Ready for handoff.',
+        updatedAt: existingStop?.updatedAt ?? now,
+      });
+    });
+  }
+
+  deliveryManifestStops.splice(0, deliveryManifestStops.length, ...nextStops);
+  manifest.routeCount = nextStops.length;
+  if (manifest.status === 'dispatched' && nextStops.length > 0 && nextStops.every((stop) => ['completed', 'failed', 'returned'].includes(stop.status))) {
+    manifest.status = 'completed';
+    manifest.completedAt = now;
+  }
+  return { manifest, stops: nextStops };
+}
+
+function recordDeliveryOutbox(input: {
+  eventId: string;
+  orderId: string;
+  action: DeliveryWritebackAction;
+  status: EventOutbox['status'];
+  payloadJson: Record<string, unknown>;
+}) {
+  const now = new Date().toISOString();
+  eventOutbox.unshift({
+    id: `outbox_${crypto.randomUUID()}`,
+    eventId: input.eventId,
+    orderId: input.orderId,
+    action: input.action,
+    payloadJson: input.payloadJson,
+    status: input.status,
+    createdAt: now,
+    processedAt: input.status === 'applied' ? now : null,
+  });
 }
 
 function queueApproval(input: Omit<ApprovalRequest, 'id' | 'status' | 'createdAt' | 'decidedAt' | 'decidedBy'>) {
@@ -4491,6 +4899,14 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     sessions: parsed.sessions ?? [],
     approvals: parsed.approvals ?? [],
     deliveryEventIds: parsed.deliveryEventIds ?? [],
+    deliveryManifests: parsed.deliveryManifests ?? deliveryManifests,
+    deliveryManifestStops: parsed.deliveryManifestStops ?? deliveryManifestStops,
+    proofOfDelivery: parsed.proofOfDelivery ?? proofOfDelivery,
+    deliveryPhotos: parsed.deliveryPhotos ?? deliveryPhotos,
+    failureReasons: parsed.failureReasons ?? failureReasons,
+    returnRecords: parsed.returnRecords ?? returnRecords,
+    returnItems: parsed.returnItems ?? returnItems,
+    eventOutbox: parsed.eventOutbox ?? eventOutbox,
     notificationJobs: parsed.notificationJobs ?? notificationJobs,
     notificationDeliveries: parsed.notificationDeliveries ?? notificationDeliveries,
     notificationTemplates: parsed.notificationTemplates ?? notificationTemplates,
@@ -4563,6 +4979,14 @@ async function persistState() {
     sessions: [...sessions.values()],
     approvals,
     deliveryEventIds: [...processedDeliveryEventIds],
+    deliveryManifests,
+    deliveryManifestStops,
+    proofOfDelivery,
+    deliveryPhotos,
+    failureReasons,
+    returnRecords,
+    returnItems,
+    eventOutbox,
     notificationJobs,
     notificationDeliveries,
     notificationTemplates,
@@ -4664,6 +5088,14 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   notificationDeliveries.splice(0, notificationDeliveries.length, ...snapshot.notificationDeliveries);
   notificationTemplates.splice(0, notificationTemplates.length, ...snapshot.notificationTemplates);
   notificationPreferences.splice(0, notificationPreferences.length, ...snapshot.notificationPreferences);
+  deliveryManifests.splice(0, deliveryManifests.length, ...snapshot.deliveryManifests);
+  deliveryManifestStops.splice(0, deliveryManifestStops.length, ...snapshot.deliveryManifestStops);
+  proofOfDelivery.splice(0, proofOfDelivery.length, ...snapshot.proofOfDelivery);
+  deliveryPhotos.splice(0, deliveryPhotos.length, ...snapshot.deliveryPhotos);
+  failureReasons.splice(0, failureReasons.length, ...snapshot.failureReasons);
+  returnRecords.splice(0, returnRecords.length, ...snapshot.returnRecords);
+  returnItems.splice(0, returnItems.length, ...snapshot.returnItems);
+  eventOutbox.splice(0, eventOutbox.length, ...snapshot.eventOutbox);
   accountHealthSnapshots.splice(0, accountHealthSnapshots.length, ...snapshot.accountHealthSnapshots);
   accountActions.splice(0, accountActions.length, ...snapshot.accountActions);
   alertRules.splice(0, alertRules.length, ...snapshot.alertRules);
@@ -5059,6 +5491,8 @@ function refreshPhase3DerivedState() {
   }
 
   alertEvents.splice(0, alertEvents.length, ...alertEventsNow);
+
+  syncDeliveryManifestStops();
 
   const activeNotifications = notificationJobs.filter((job) => job.status !== 'failed');
   if (activeNotifications.length === 0 && customers.length > 0) {

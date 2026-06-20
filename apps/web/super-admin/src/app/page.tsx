@@ -312,6 +312,19 @@ type Customer360Response = {
   recurrenceRules: RecurrenceRule[];
   standingOrderChanges: StandingOrderChange[];
   orders: Order[];
+  analytics?: {
+    orderCount: number;
+    repeatOrderCount: number;
+    revenue: number;
+    averageOrderValue: number;
+    activeSupportCases: number;
+    activeStandingOrders: number;
+    riskState: string;
+    riskScore: number;
+    estimatedMargin: number;
+    lastOrderAt: string | null;
+    segments: string[];
+  };
 };
 
 type AuditEvent = {
@@ -2137,6 +2150,35 @@ export default function Home() {
                             </div>
                           </div>
 
+                          <div className="rounded-2xl border border-stone-200 bg-stone-950 p-4 text-stone-50">
+                            <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Customer analytics</div>
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                              <InfoBlock label="Orders" value={String(selectedCustomer.analytics?.orderCount ?? selectedCustomer.orders.length)} />
+                              <InfoBlock label="Repeat orders" value={String(selectedCustomer.analytics?.repeatOrderCount ?? 0)} />
+                              <InfoBlock
+                                label="Revenue"
+                                value={`₹${(selectedCustomer.analytics?.revenue ?? 0).toLocaleString()}`}
+                              />
+                              <InfoBlock
+                                label="Avg order"
+                                value={`₹${(selectedCustomer.analytics?.averageOrderValue ?? 0).toLocaleString()}`}
+                              />
+                              <InfoBlock label="Open cases" value={String(selectedCustomer.analytics?.activeSupportCases ?? 0)} />
+                              <InfoBlock label="Standing orders" value={String(selectedCustomer.analytics?.activeStandingOrders ?? 0)} />
+                              <InfoBlock label="Risk score" value={String(selectedCustomer.analytics?.riskScore ?? 0)} />
+                              <InfoBlock
+                                label="Estimated margin"
+                                value={`₹${(selectedCustomer.analytics?.estimatedMargin ?? 0).toLocaleString()}`}
+                              />
+                            </div>
+                            <div className="mt-4 text-sm text-stone-300">
+                              Segments: {(selectedCustomer.analytics?.segments ?? []).join(', ') || 'none'}
+                            </div>
+                            <div className="mt-1 text-xs text-stone-400">
+                              Last order: {selectedCustomer.analytics?.lastOrderAt ?? 'No orders yet'}
+                            </div>
+                          </div>
+
                           <div className="space-y-3">
                             <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Branches</div>
                             {selectedCustomer.branches.length > 0 ? (
@@ -3204,6 +3246,25 @@ export default function Home() {
                     </div>
                   </div>
 
+                  <div className="rounded-2xl border border-stone-200 bg-stone-950 p-4 text-stone-50">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Customer analytics</div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <InfoBlock label="Orders" value={String(selectedCustomer.analytics?.orderCount ?? selectedCustomer.orders.length)} />
+                      <InfoBlock label="Repeat orders" value={String(selectedCustomer.analytics?.repeatOrderCount ?? 0)} />
+                      <InfoBlock label="Revenue" value={`Rs. ${(selectedCustomer.analytics?.revenue ?? 0).toLocaleString()}`} />
+                      <InfoBlock label="Avg order" value={`Rs. ${(selectedCustomer.analytics?.averageOrderValue ?? 0).toLocaleString()}`} />
+                      <InfoBlock label="Open cases" value={String(selectedCustomer.analytics?.activeSupportCases ?? 0)} />
+                      <InfoBlock label="Standing orders" value={String(selectedCustomer.analytics?.activeStandingOrders ?? 0)} />
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <InfoBlock label="Risk score" value={String(selectedCustomer.analytics?.riskScore ?? 0)} />
+                      <InfoBlock label="Margin" value={`Rs. ${(selectedCustomer.analytics?.estimatedMargin ?? 0).toLocaleString()}`} />
+                    </div>
+                    <div className="mt-4 text-sm text-stone-300">
+                      Segments: {(selectedCustomer.analytics?.segments ?? []).join(', ') || 'none'}
+                    </div>
+                  </div>
+
                   <div className="space-y-3">
                     <div className="text-sm font-bold uppercase tracking-[0.18em] text-stone-400">
                       Support notes
@@ -3703,6 +3764,17 @@ export default function Home() {
                               <div className="mt-2 text-xs text-stone-300">
                                 Outstanding Rs. {customer.outstandingBalance.toLocaleString()}
                               </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  loadCustomerDetail(customer.customerId).catch((detailError) =>
+                                    setError((detailError as Error).message),
+                                  );
+                                }}
+                                className="mt-3 rounded-full border border-white/20 px-3 py-1 text-xs font-bold text-white"
+                              >
+                                Open customer analytics
+                              </button>
                             </div>
                           ))
                         ) : (

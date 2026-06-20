@@ -462,6 +462,19 @@ export interface Customer360Response {
   documents?: CustomerDocument[];
   invoiceExports?: InvoiceExport[];
   orders: Order[];
+  analytics?: {
+    orderCount: number;
+    repeatOrderCount: number;
+    revenue: number;
+    averageOrderValue: number;
+    activeSupportCases: number;
+    activeStandingOrders: number;
+    riskState: RiskState;
+    riskScore: number;
+    estimatedMargin: number;
+    lastOrderAt: string | null;
+    segments: string[];
+  };
 }
 
 export interface CustomerOnboardingRequest {

@@ -4459,6 +4459,41 @@ function buildCustomer360(customerId: string): Customer360Response {
   const documentsForCustomer = documents.filter((document) => document.customerId === customer.id);
   const invoiceExportsForCustomer = invoiceExports.filter((invoice) => invoice.customerId === customer.id);
   const timeline = buildCustomerTimeline(customer.id);
+  const orderHistory = orders.filter((entry) => entry.customerId === customer.id);
+  const orderCount = orderHistory.length;
+  const revenue = orderHistory.reduce((sum, order) => sum + order.amountTotal, 0);
+  const repeatOrderCount = Math.max(0, orderCount - 1);
+  const averageOrderValue = orderCount === 0 ? 0 : Math.round(revenue / orderCount);
+  const activeSupportCases = supportCasesForCustomer.filter((entry) => !['closed'].includes(entry.status)).length;
+  const activeStandingOrders = standingOrdersForCustomer.filter((entry) => entry.status === 'active').length;
+  const lastOrderAt = orderHistory[0]?.createdAt ?? null;
+  const segments = [
+    orderCount > 1 ? 'repeat_customers' : null,
+    revenue >= 10000 ? 'high_value_customers' : null,
+    orderCount === 0 ? 'dormant_customers' : null,
+    ['watch', 'block_soon', 'blocked'].includes(customer.riskState) ? 'watch_customers' : null,
+  ].filter((entry): entry is string => Boolean(entry));
+  const estimatedCostRateByCategory = new Map<string, number>([
+    ['Laminated', 0.58],
+    ['Bread', 0.52],
+    ['Pastry', 0.54],
+  ]);
+  const estimatedCost = orderHistory.reduce((sum, order) => {
+    return (
+      sum +
+      order.items.reduce((orderSum, item) => {
+        const product = products.find((entry) => entry.id === item.productId);
+        const categoryRate = estimatedCostRateByCategory.get(product?.category ?? '') ?? 0.55;
+        return orderSum + Math.round(item.quantity * item.unitPrice * categoryRate);
+      }, 0)
+    );
+  }, 0);
+  const estimatedMargin = revenue - estimatedCost;
+  const exposureRatio = customer.creditLimit > 0 ? customer.outstandingBalance / customer.creditLimit : 0;
+  const riskScore = Math.min(
+    100,
+    Math.max(0, Math.round(exposureRatio * 65 + activeSupportCases * 8 + activeStandingOrders * 3 + repeatOrderCount * 2 + (customer.riskState === 'blocked' ? 30 : customer.riskState === 'block_soon' ? 20 : customer.riskState === 'watch' ? 10 : 0))),
+  );
   return {
     customer,
     auth: auth
@@ -4485,7 +4520,20 @@ function buildCustomer360(customerId: string): Customer360Response {
     invoiceExports: invoiceExportsForCustomer,
     branches,
     users,
-    orders: orders.filter((entry) => entry.customerId === customer.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    orders: orderHistory.sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    analytics: {
+      orderCount,
+      repeatOrderCount,
+      revenue,
+      averageOrderValue,
+      activeSupportCases,
+      activeStandingOrders,
+      riskState: customer.riskState,
+      riskScore,
+      estimatedMargin,
+      lastOrderAt,
+      segments,
+    },
   };
 }
 

@@ -675,6 +675,10 @@ type AnalyticsSnapshotPayload = {
       outstandingBalance: number;
     }>;
   };
+  metrics: {
+    customerMetricsCount: number;
+    branchMetricsCount: number;
+  };
 };
 
 type CustomerRequest = {
@@ -3868,6 +3872,17 @@ export default function Home() {
                         ) : (
                           <GateMessage message="No risk snapshot data yet." />
                         )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5 lg:col-span-2">
+                      <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Historical metrics</div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <InfoBlock label="Customer metrics" value={`${analyticsPayload.metrics.customerMetricsCount}`} />
+                        <InfoBlock label="Branch metrics" value={`${analyticsPayload.metrics.branchMetricsCount}`} />
+                      </div>
+                      <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-600">
+                        Each analytics rebuild now leaves a dated customer and branch metric trail for audits and exports.
                       </div>
                     </div>
 

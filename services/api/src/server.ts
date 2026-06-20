@@ -406,6 +406,33 @@ type RiskSnapshot = {
   updatedAt: string;
 };
 
+type CustomerMetric = {
+  id: string;
+  customerId: string;
+  serviceDate: string;
+  orderCount: number;
+  revenue: number;
+  repeatOrderCount: number;
+  outstandingBalance: number;
+  riskState: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type BranchMetric = {
+  id: string;
+  branchId: string;
+  serviceDate: string;
+  orderCount: number;
+  revenue: number;
+  returnCount: number;
+  failureCount: number;
+  deliverySuccessRate: number;
+  grossMargin: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type KpiRollup = {
   id: string;
   metricCode: string;
@@ -529,6 +556,8 @@ type ApiStateSnapshot = {
   segmentMemberships: SegmentMembership[];
   marginSnapshots: MarginSnapshot[];
   riskSnapshots: RiskSnapshot[];
+  customerMetrics: CustomerMetric[];
+  branchMetrics: BranchMetric[];
   customerRequests: CustomerRequest[];
   savedAddresses: SavedAddress[];
   reportExports: ReportExport[];
@@ -1052,6 +1081,8 @@ let segmentDefinitions: SegmentDefinition[] = [
 let segmentMemberships: SegmentMembership[] = [];
 let marginSnapshots: MarginSnapshot[] = [];
 let riskSnapshots: RiskSnapshot[] = [];
+let customerMetrics: CustomerMetric[] = [];
+let branchMetrics: BranchMetric[] = [];
 let customerRequests: CustomerRequest[] = [];
 let savedAddresses: SavedAddress[] = [
   {
@@ -5099,6 +5130,14 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
       status: snapshot.status ?? 'ready',
       updatedAt: snapshot.updatedAt ?? snapshot.createdAt,
     })),
+    customerMetrics: (parsed.customerMetrics ?? customerMetrics).map((metric) => ({
+      ...metric,
+      updatedAt: metric.updatedAt ?? metric.createdAt,
+    })),
+    branchMetrics: (parsed.branchMetrics ?? branchMetrics).map((metric) => ({
+      ...metric,
+      updatedAt: metric.updatedAt ?? metric.createdAt,
+    })),
     customerRequests: parsed.customerRequests ?? customerRequests,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
@@ -5188,6 +5227,8 @@ async function persistState() {
     segmentMemberships,
     marginSnapshots,
     riskSnapshots,
+    customerMetrics,
+    branchMetrics,
     customerRequests,
     savedAddresses,
     reportExports,
@@ -5297,6 +5338,8 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   segmentMemberships.splice(0, segmentMemberships.length, ...snapshot.segmentMemberships);
   marginSnapshots.splice(0, marginSnapshots.length, ...snapshot.marginSnapshots);
   riskSnapshots.splice(0, riskSnapshots.length, ...snapshot.riskSnapshots);
+  customerMetrics.splice(0, customerMetrics.length, ...snapshot.customerMetrics);
+  branchMetrics.splice(0, branchMetrics.length, ...snapshot.branchMetrics);
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
@@ -5720,6 +5763,52 @@ function refreshPhase3DerivedState() {
     })
     .sort((left, right) => right.revenue - left.revenue || right.orderCount - left.orderCount);
 
+  customerMetrics.splice(
+    0,
+    customerMetrics.length,
+    ...customers.map((customer) => {
+      const orderCount = customerOrderCounts.get(customer.id) ?? 0;
+      const revenue = customerRevenue.get(customer.id) ?? 0;
+      const repeatOrderCount = Math.max(0, orderCount - 1);
+      return {
+        id: `customer_metric_${today}_${customer.id}`,
+        customerId: customer.id,
+        serviceDate: today,
+        orderCount,
+        revenue,
+        repeatOrderCount,
+        outstandingBalance: customer.outstandingBalance,
+        riskState: customer.riskState,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies CustomerMetric;
+    }),
+  );
+
+  branchMetrics.splice(
+    0,
+    branchMetrics.length,
+    ...customerBranches.map((branch) => {
+      const performance = branchPerformance.find((entry) => entry.branchId === branch.id);
+      const branchRevenueValue = branchRevenue.get(branch.id) ?? 0;
+      const branchReturnCountValue = branchReturnCounts.get(branch.id) ?? 0;
+      const branchFailureCountValue = branchFailureCounts.get(branch.id) ?? 0;
+      return {
+        id: `branch_metric_${today}_${branch.id}`,
+        branchId: branch.id,
+        serviceDate: today,
+        orderCount: performance?.orderCount ?? 0,
+        revenue: branchRevenueValue,
+        returnCount: branchReturnCountValue,
+        failureCount: branchFailureCountValue,
+        deliverySuccessRate: performance?.deliverySuccessRate ?? 0,
+        grossMargin: Math.max(0, Math.round(branchRevenueValue - (branchRevenueValue * 0.55))),
+        createdAt: now,
+        updatedAt: now,
+      } satisfies BranchMetric;
+    }),
+  );
+
   const paymentMix = {
     prepaid: paymentModeCounts.get('prepaid') ?? 0,
     partPay: paymentModeCounts.get('part-pay') ?? 0,
@@ -5910,6 +5999,10 @@ function refreshPhase3DerivedState() {
       blockSoonCustomers: riskBuckets.blockSoon,
       blockedCustomers: riskBuckets.blocked,
       topRiskCustomers,
+    },
+    metrics: {
+      customerMetricsCount: customerMetrics.length,
+      branchMetricsCount: branchMetrics.length,
     },
     pricing: {
       orderMix: paymentMix,

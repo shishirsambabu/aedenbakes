@@ -708,6 +708,7 @@ type ReportExport = {
   status: 'queued' | 'generated' | 'delivered';
   generatedAt: string | null;
   deliveredAt: string | null;
+  downloadUrl: string;
   payloadJson: Record<string, unknown>;
 };
 
@@ -3945,6 +3946,16 @@ export default function Home() {
                             </div>
                             <div className="mt-1 text-xs text-stone-500">
                               {report.createdBy} | {new Date(report.createdAt).toLocaleString()}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <a
+                                href={`${API_BASE_URL}${report.downloadUrl}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
+                              >
+                                Download
+                              </a>
                             </div>
                           </div>
                         ))}

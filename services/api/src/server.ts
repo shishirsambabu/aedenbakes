@@ -469,6 +469,7 @@ type ReportExport = {
   status: 'queued' | 'generated' | 'delivered';
   generatedAt: string | null;
   deliveredAt: string | null;
+  downloadUrl: string;
   payloadJson: Record<string, unknown>;
 };
 
@@ -3222,8 +3223,10 @@ app.post('/reports/export', authenticate, requireAnyRole(['owner', 'manager', 'a
     status: 'queued',
     generatedAt: null,
     deliveredAt: null,
+    downloadUrl: '',
     payloadJson: payload,
   };
+  report.downloadUrl = `/reports/${report.id}/download`;
   reportExports.unshift(report);
   persistStateSoon();
   res.status(201).json({ report, reportExports });
@@ -3259,6 +3262,27 @@ app.post('/reports/:id/deliver', authenticate, requireAnyRole(['owner', 'manager
   report.deliveredAt = new Date().toISOString();
   persistStateSoon();
   res.json({ report, reportExports });
+});
+
+app.get('/reports/:id/download', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const report = reportExports.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!report) {
+    res.status(404).json({ error: 'Report not found' });
+    return;
+  }
+  if (report.status === 'queued') {
+    res.status(400).json({ error: 'Report is not ready for download' });
+    return;
+  }
+  res.json({
+    reportCode: report.reportCode,
+    createdBy: report.createdBy,
+    createdAt: report.createdAt,
+    status: report.status,
+    generatedAt: report.generatedAt,
+    deliveredAt: report.deliveredAt,
+    payloadJson: report.payloadJson,
+  });
 });
 
 app.get('/documents', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
@@ -5145,6 +5169,7 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
       status: report.status ?? 'queued',
       generatedAt: report.generatedAt ?? null,
       deliveredAt: report.deliveredAt ?? null,
+      downloadUrl: report.downloadUrl ?? `/reports/${report.id}/download`,
     })),
     documents: parsed.documents ?? documents,
     documentAccessLogs: parsed.documentAccessLogs ?? documentAccessLogs,

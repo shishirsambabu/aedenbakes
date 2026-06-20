@@ -814,6 +814,7 @@ export default function Home() {
   const [appState, setAppState] = useState<AppState>(initialAppState);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer360Response | null>(null);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [supportCaseDraft, setSupportCaseDraft] = useState('');
   const [supportNoteDraft, setSupportNoteDraft] = useState('');
   const [standingOrderCustomerId, setStandingOrderCustomerId] = useState('cust_cafe_nook');
@@ -1203,6 +1204,8 @@ export default function Home() {
   const selectedBranchOrders = selectedBranchId ? orders.filter((order) => order.branchId === selectedBranchId).slice(0, 6) : [];
   const selectedBranchCustomer =
     selectedBranchMetric?.customerId ? customers.find((customer) => customer.id === selectedBranchMetric.customerId) ?? null : null;
+  const selectedReport =
+    appState.reportExports.find((report) => report.id === selectedReportId) ?? appState.reportExports[0] ?? null;
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
   const supportInbox = supportCases.filter((supportCase) => supportCase.status !== 'closed');
   const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -4160,7 +4163,12 @@ export default function Home() {
                       </div>
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
                         {appState.reportExports.slice(0, 2).map((report) => (
-                          <div key={report.id} className="rounded-2xl bg-white px-4 py-3 text-sm">
+                          <button
+                            key={report.id}
+                            type="button"
+                            onClick={() => setSelectedReportId(report.id)}
+                            className="rounded-2xl bg-white px-4 py-3 text-left text-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                          >
                             <div className="flex items-center justify-between gap-3">
                               <div className="font-semibold text-stone-950">{report.reportCode}</div>
                               <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{report.status}</div>
@@ -4171,6 +4179,7 @@ export default function Home() {
                             <div className="mt-3 flex flex-wrap gap-2">
                               <a
                                 href={`${API_BASE_URL}${report.downloadUrl}`}
+                                onClick={(event) => event.stopPropagation()}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
@@ -4178,9 +4187,32 @@ export default function Home() {
                                 Download
                               </a>
                             </div>
-                          </div>
+                          </button>
                         ))}
                       </div>
+                      {selectedReport ? (
+                        <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-700">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-stone-950">{selectedReport.reportCode}</div>
+                              <div className="text-xs text-stone-500">
+                                Status {selectedReport.status} | Created {new Date(selectedReport.createdAt).toLocaleString()}
+                              </div>
+                            </div>
+                            <a
+                              href={`${API_BASE_URL}${selectedReport.downloadUrl}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
+                            >
+                              Open download
+                            </a>
+                          </div>
+                          <pre className="mt-3 max-h-56 overflow-auto rounded-2xl bg-stone-950 p-4 text-xs text-stone-100">
+                            {JSON.stringify(selectedReport.payloadJson, null, 2)}
+                          </pre>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>

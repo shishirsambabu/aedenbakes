@@ -815,6 +815,7 @@ export default function Home() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer360Response | null>(null);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null);
   const [supportCaseDraft, setSupportCaseDraft] = useState('');
   const [supportNoteDraft, setSupportNoteDraft] = useState('');
   const [standingOrderCustomerId, setStandingOrderCustomerId] = useState('cust_cafe_nook');
@@ -1204,6 +1205,8 @@ export default function Home() {
   const selectedBranchOrders = selectedBranchId ? orders.filter((order) => order.branchId === selectedBranchId).slice(0, 6) : [];
   const selectedBranchCustomer =
     selectedBranchMetric?.customerId ? customers.find((customer) => customer.id === selectedBranchMetric.customerId) ?? null : null;
+  const selectedSnapshot =
+    appState.analytics.snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? appState.analytics.latest ?? null;
   const selectedReport =
     appState.reportExports.find((report) => report.id === selectedReportId) ?? appState.reportExports[0] ?? null;
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
@@ -4137,6 +4140,60 @@ export default function Home() {
                       <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-600">
                         Each analytics rebuild now leaves a dated customer and branch metric trail for audits and exports.
                       </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-stone-100 p-5 lg:col-span-2">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Snapshot archive</div>
+                          <div className="mt-1 text-sm text-stone-600">
+                            Open any analytics snapshot from the historical trail and inspect its raw payload.
+                          </div>
+                        </div>
+                        <div className="rounded-2xl bg-white px-3 py-2 text-xs font-semibold text-stone-600">
+                          {appState.analytics.snapshots.length} snapshots
+                        </div>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        {appState.analytics.snapshots.slice(0, 4).map((snapshot) => (
+                          <button
+                            key={snapshot.id}
+                            type="button"
+                            onClick={() => setSelectedSnapshotId(snapshot.id)}
+                            className="rounded-2xl bg-white px-4 py-3 text-left text-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-semibold text-stone-950">{new Date(snapshot.snapshotTime).toLocaleString()}</div>
+                              <div className="text-xs uppercase tracking-[0.18em] text-stone-500">{snapshot.status}</div>
+                            </div>
+                            <div className="mt-1 text-xs text-stone-500">Snapshot {snapshot.id}</div>
+                          </button>
+                        ))}
+                      </div>
+                      {selectedSnapshot ? (
+                        <div className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm text-stone-700">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-stone-950">
+                                {new Date(selectedSnapshot.snapshotTime).toLocaleString()}
+                              </div>
+                              <div className="text-xs text-stone-500">
+                                Status {selectedSnapshot.status} | Created {new Date(selectedSnapshot.createdAt).toLocaleString()}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSnapshotId(null)}
+                              className="rounded-full border border-stone-300 px-3 py-1 text-xs font-bold text-stone-700"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                          <pre className="mt-3 max-h-56 overflow-auto rounded-2xl bg-stone-950 p-4 text-xs text-stone-100">
+                            {JSON.stringify(selectedSnapshot.payloadJson, null, 2)}
+                          </pre>
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="rounded-3xl bg-amber-50 p-5 ring-1 ring-amber-200 lg:col-span-2">

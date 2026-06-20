@@ -215,6 +215,66 @@ type StandingOrderChange = {
   reason: string;
 };
 
+type CustomerPricingRule = {
+  id: string;
+  customerId: string | null;
+  branchId: string | null;
+  productId: string | null;
+  price: number;
+  pricingMode: 'fixed' | 'discount_percent';
+  status: 'active' | 'paused';
+  reason?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CreditLedgerEntry = {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  entryType: 'invoice' | 'payment' | 'credit_note' | 'adjustment' | 'hold' | 'release';
+  amount: number;
+  balanceAfter: number;
+  referenceType: string;
+  referenceId: string;
+  note?: string;
+  createdAt: string;
+};
+
+type CreditHoldEvent = {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  status: 'active' | 'released';
+  reason: string;
+  createdAt: string;
+  releasedAt: string | null;
+};
+
+type SubstitutionRule = {
+  id: string;
+  customerId: string | null;
+  branchId: string | null;
+  productId: string;
+  substituteProductId: string;
+  status: 'active' | 'paused';
+  reason: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SubstitutionEvent = {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  orderId: string | null;
+  productId: string;
+  substituteProductId: string;
+  status: 'proposed' | 'approved' | 'applied' | 'rejected';
+  reason: string;
+  createdAt: string;
+};
+
 type SupportCase = {
   id: string;
   customerId: string;
@@ -461,6 +521,11 @@ type AppState = {
   standingOrderPauses: StandingOrderPause[];
   recurrenceRules: RecurrenceRule[];
   standingOrderChanges: StandingOrderChange[];
+  customerPricingRules: CustomerPricingRule[];
+  creditLedgerEntries: CreditLedgerEntry[];
+  creditHoldEvents: CreditHoldEvent[];
+  substitutionRules: SubstitutionRule[];
+  substitutionEvents: SubstitutionEvent[];
   erpContractPreview: VasyErpContractPreview | null;
   notifications: {
     jobs: NotificationJob[];
@@ -497,6 +562,11 @@ const initialAppState: AppState = {
   standingOrderPauses: [],
   recurrenceRules: [],
   standingOrderChanges: [],
+  customerPricingRules: [],
+  creditLedgerEntries: [],
+  creditHoldEvents: [],
+  substitutionRules: [],
+  substitutionEvents: [],
   erpContractPreview: null,
   notifications: { jobs: [], deliveries: [] },
   accountHealth: { snapshots: [], actions: [] },
@@ -532,6 +602,18 @@ export default function Home() {
   const [recurrenceRuleDaysDraft, setRecurrenceRuleDaysDraft] = useState('1,2,3,4,5');
   const [recurrenceRuleSlotId, setRecurrenceRuleSlotId] = useState('slot_morning');
   const [recurrenceRuleNotes, setRecurrenceRuleNotes] = useState('Auto-generate weekday breakfast runs.');
+  const [pricingRuleCustomerId, setPricingRuleCustomerId] = useState('cust_cafe_nook');
+  const [pricingRuleBranchId, setPricingRuleBranchId] = useState('branch_cafe_nook_main');
+  const [pricingRuleProductId, setPricingRuleProductId] = useState('prod_loaf');
+  const [pricingRulePrice, setPricingRulePrice] = useState('88');
+  const [pricingRuleReason, setPricingRuleReason] = useState('Contract price for weekday breakfast.');
+  const [creditHoldCustomerId, setCreditHoldCustomerId] = useState('cust_hotel_lotus');
+  const [creditHoldReason, setCreditHoldReason] = useState('Credit review pending after month-end exposure.');
+  const [subRuleCustomerId, setSubRuleCustomerId] = useState('');
+  const [subRuleBranchId, setSubRuleBranchId] = useState('');
+  const [subRuleProductId, setSubRuleProductId] = useState('prod_loaf');
+  const [subRuleReplacementId, setSubRuleReplacementId] = useState('prod_danish');
+  const [subRuleReason, setSubRuleReason] = useState('Fallback substitute when the main item is tight.');
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -565,6 +647,7 @@ export default function Home() {
         operationsRes,
         supportRes,
         standingRes,
+        commercialRes,
         notificationsRes,
         accountHealthRes,
         analyticsRes,
@@ -585,6 +668,7 @@ export default function Home() {
         sessionToken && canViewOps ? fetchWithTimeout(`${API_BASE_URL}/admin/operations`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewOps ? fetchWithTimeout(`${API_BASE_URL}/support/cases`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewStanding ? fetchWithTimeout(`${API_BASE_URL}/standing-orders`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
+        sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/commercial/overview`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/notifications`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/account-health`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
         sessionToken && canViewCommercial ? fetchWithTimeout(`${API_BASE_URL}/analytics/overview`, { headers: authHeaders(sessionToken) }) : Promise.resolve(null),
@@ -612,6 +696,11 @@ export default function Home() {
       let standingOrderPauses: StandingOrderPause[] = [];
       let recurrenceRules: RecurrenceRule[] = [];
       let standingOrderChanges: StandingOrderChange[] = [];
+      let customerPricingRules: CustomerPricingRule[] = [];
+      let creditLedgerEntries: CreditLedgerEntry[] = [];
+      let creditHoldEvents: CreditHoldEvent[] = [];
+      let substitutionRules: SubstitutionRule[] = [];
+      let substitutionEvents: SubstitutionEvent[] = [];
       let erpSyncStatus: ErpSyncStatus | null = null;
       let erpContractPreview: VasyErpContractPreview | null = null;
       let notifications: AppState['notifications'] = { jobs: [], deliveries: [] };
@@ -651,6 +740,18 @@ export default function Home() {
         standingOrderPauses = standingJson.standingOrderPauses ?? [];
         recurrenceRules = standingJson.recurrenceRules ?? [];
         standingOrderChanges = standingJson.standingOrderChanges ?? [];
+      }
+
+      if (commercialRes) {
+        if (!commercialRes.ok) {
+          throw new Error('Could not refresh commercial controls.');
+        }
+        const commercialJson = await commercialRes.json();
+        customerPricingRules = commercialJson.pricingRules ?? [];
+        creditLedgerEntries = commercialJson.creditLedgerEntries ?? [];
+        creditHoldEvents = commercialJson.creditHoldEvents ?? [];
+        substitutionRules = commercialJson.substitutionRules ?? [];
+        substitutionEvents = commercialJson.substitutionEvents ?? [];
       }
 
       if (notificationsRes) {
@@ -744,6 +845,11 @@ export default function Home() {
         standingOrderPauses,
         recurrenceRules,
         standingOrderChanges,
+        customerPricingRules,
+        creditLedgerEntries,
+        creditHoldEvents,
+        substitutionRules,
+        substitutionEvents,
         erpContractPreview,
         notifications,
         accountHealth,
@@ -813,6 +919,11 @@ export default function Home() {
     standingOrderPauses,
     recurrenceRules,
     standingOrderChanges,
+    customerPricingRules,
+    creditLedgerEntries,
+    creditHoldEvents,
+    substitutionRules,
+    substitutionEvents,
     erpContractPreview,
   } = appState;
   const latestEvents = auditEvents.slice(0, 4);
@@ -1134,6 +1245,60 @@ export default function Home() {
       `/standing-order-changes/${changeId}/${decision}`,
       {},
       decision === 'approve' ? 'Standing order change approved.' : 'Standing order change rejected.',
+    );
+  }
+
+  async function createPricingRule() {
+    if (!token) {
+      return;
+    }
+
+    await performAction(
+      '/pricing-rules',
+      {
+        customerId: pricingRuleCustomerId.trim() || null,
+        branchId: pricingRuleBranchId.trim() || null,
+        productId: pricingRuleProductId.trim(),
+        price: Number(pricingRulePrice),
+        pricingMode: 'fixed',
+        status: 'active',
+        reason: pricingRuleReason.trim(),
+      },
+      'Pricing rule created.',
+    );
+  }
+
+  async function createCreditHold() {
+    if (!token) {
+      return;
+    }
+
+    await performAction(
+      '/credit-holds',
+      {
+        customerId: creditHoldCustomerId.trim(),
+        branchId: null,
+        reason: creditHoldReason.trim(),
+      },
+      'Credit hold created.',
+    );
+  }
+
+  async function createSubstitutionRule() {
+    if (!token) {
+      return;
+    }
+
+    await performAction(
+      '/substitution-rules',
+      {
+        customerId: subRuleCustomerId.trim() || null,
+        branchId: subRuleBranchId.trim() || null,
+        productId: subRuleProductId.trim(),
+        substituteProductId: subRuleReplacementId.trim(),
+        reason: subRuleReason.trim(),
+      },
+      'Substitution rule created.',
     );
   }
 
@@ -2963,6 +3128,127 @@ export default function Home() {
               ) : (
                 <GateMessage message="ERP export preview is available only for sync-enabled roles." />
               )}
+            </Card>
+
+            <Card title="Commercial controls" subtitle="Pricing rules, credit holds, and substitutions live here.">
+              <div className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Customer" value={pricingRuleCustomerId} onChange={setPricingRuleCustomerId} />
+                  <Field label="Branch" value={pricingRuleBranchId} onChange={setPricingRuleBranchId} />
+                  <Field label="Product" value={pricingRuleProductId} onChange={setPricingRuleProductId} />
+                  <Field label="Price" value={pricingRulePrice} onChange={setPricingRulePrice} />
+                </div>
+                <Field
+                  label="Pricing reason"
+                  value={pricingRuleReason}
+                  onChange={setPricingRuleReason}
+                  placeholder="Contract price for weekday breakfast."
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      createPricingRule().catch((actionError) => setError((actionError as Error).message));
+                    }}
+                    className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white"
+                  >
+                    Create pricing rule
+                  </button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Hold customer" value={creditHoldCustomerId} onChange={setCreditHoldCustomerId} />
+                  <Field
+                    label="Hold reason"
+                    value={creditHoldReason}
+                    onChange={setCreditHoldReason}
+                    placeholder="Credit review pending after month-end exposure."
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      createCreditHold().catch((actionError) => setError((actionError as Error).message));
+                    }}
+                    className="rounded-2xl bg-amber-700 px-4 py-3 text-sm font-bold text-white"
+                  >
+                    Apply credit hold
+                  </button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Sub customer" value={subRuleCustomerId} onChange={setSubRuleCustomerId} />
+                  <Field label="Sub branch" value={subRuleBranchId} onChange={setSubRuleBranchId} />
+                  <Field label="Product" value={subRuleProductId} onChange={setSubRuleProductId} />
+                  <Field label="Replacement" value={subRuleReplacementId} onChange={setSubRuleReplacementId} />
+                </div>
+                <Field
+                  label="Substitution reason"
+                  value={subRuleReason}
+                  onChange={setSubRuleReason}
+                  placeholder="Fallback substitute when the main item is tight."
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      createSubstitutionRule().catch((actionError) => setError((actionError as Error).message));
+                    }}
+                    className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white"
+                  >
+                    Create substitution rule
+                  </button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl bg-stone-50 p-4">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Pricing rules</div>
+                    <div className="mt-3 space-y-2">
+                      {customerPricingRules.slice(0, 4).map((rule) => (
+                        <div key={rule.id} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="font-semibold text-stone-950">{rule.productId ?? 'All products'}</div>
+                          <div className="text-xs text-stone-500">
+                            {rule.status} | {rule.pricingMode} | Rs. {rule.price}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl bg-stone-50 p-4">
+                    <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Credit holds</div>
+                    <div className="mt-3 space-y-2">
+                      {creditHoldEvents.slice(0, 4).map((hold) => (
+                        <div key={hold.id} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="font-semibold text-stone-950">{hold.customerId}</div>
+                          <div className="text-xs text-stone-500">
+                            {hold.status} | {hold.reason}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-stone-50 p-4">
+                  <div className="text-xs font-black uppercase tracking-[0.18em] text-stone-400">Substitution events</div>
+                  <div className="mt-3 space-y-2">
+                    {substitutionEvents.length > 0 ? (
+                      substitutionEvents.slice(0, 4).map((event) => (
+                        <div key={event.id} className="rounded-2xl bg-white px-3 py-2 text-sm">
+                          <div className="font-semibold text-stone-950">
+                            {event.productId} → {event.substituteProductId}
+                          </div>
+                          <div className="text-xs text-stone-500">
+                            {event.status} | {event.reason}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <GateMessage message="No substitution events yet." />
+                    )}
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-600">
+                  Ledger entries: {creditLedgerEntries.length} | Active holds: {creditHoldEvents.filter((hold) => hold.status === 'active').length}
+                </div>
+              </div>
             </Card>
 
             <Card title="Phase 3 commercial layer" subtitle="Notifications, health, alerts, and customer self-service in one place.">

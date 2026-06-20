@@ -44,6 +44,66 @@ export interface CustomerBranch {
   updatedAt: string;
 }
 
+export interface CustomerPricingRule {
+  id: string;
+  customerId: string | null;
+  branchId: string | null;
+  productId: string | null;
+  price: number;
+  pricingMode: 'fixed' | 'discount_percent';
+  status: 'active' | 'paused';
+  reason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreditLedgerEntry {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  entryType: 'invoice' | 'payment' | 'credit_note' | 'adjustment' | 'hold' | 'release';
+  amount: number;
+  balanceAfter: number;
+  referenceType: string;
+  referenceId: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface CreditHoldEvent {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  status: 'active' | 'released';
+  reason: string;
+  createdAt: string;
+  releasedAt: string | null;
+}
+
+export interface SubstitutionRule {
+  id: string;
+  customerId: string | null;
+  branchId: string | null;
+  productId: string;
+  substituteProductId: string;
+  status: 'active' | 'paused';
+  reason: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SubstitutionEvent {
+  id: string;
+  customerId: string;
+  branchId: string | null;
+  orderId: string | null;
+  productId: string;
+  substituteProductId: string;
+  status: 'proposed' | 'approved' | 'applied' | 'rejected';
+  reason: string;
+  createdAt: string;
+}
+
 export interface CustomerUserMembership {
   id: string;
   customerId: string;
@@ -215,6 +275,11 @@ export interface CustomerDashboardResponse {
   branches: CustomerBranch[];
   users: CustomerUserMembership[];
   orders: Order[];
+  pricingRules: CustomerPricingRule[];
+  creditHolds: CreditHoldEvent[];
+  creditLedgerEntries: CreditLedgerEntry[];
+  substitutionRules: SubstitutionRule[];
+  substitutionEvents: SubstitutionEvent[];
   catalog: {
     products: Product[];
     capacities: ProductDayCapacity[];

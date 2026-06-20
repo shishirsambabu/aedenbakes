@@ -347,6 +347,11 @@ class _AedenJourneyState extends State<AedenJourney> {
   final List<_StandingOrder> _standingOrders = [];
   final List<_StandingOrderChange> _standingOrderChanges = [];
   final List<_RecurrenceRule> _recurrenceRules = [];
+  final List<_CustomerPricingRule> _pricingRules = [];
+  final List<_CreditHoldEvent> _creditHolds = [];
+  final List<_CreditLedgerEntry> _creditLedgerEntries = [];
+  final List<_SubstitutionRule> _substitutionRules = [];
+  final List<_SubstitutionEvent> _substitutionEvents = [];
   final List<_CustomerBranch> _branches = [
     const _CustomerBranch(
       id: 'branch-main',
@@ -797,6 +802,92 @@ class _AedenJourneyState extends State<AedenJourney> {
         .where((order) => order.id.isNotEmpty)
         .toList(growable: false);
 
+    final pricingRules = (payload['pricingRules'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _CustomerPricingRule(
+            id: entry['id'] as String? ?? '',
+            customerId: entry['customerId'] as String?,
+            branchId: entry['branchId'] as String?,
+            productId: entry['productId'] as String?,
+            price: (entry['price'] as num?)?.round() ?? 0,
+            pricingMode: entry['pricingMode'] as String? ?? 'fixed',
+            status: entry['status'] as String? ?? 'active',
+            reason: entry['reason'] as String?,
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    final creditHolds = (payload['creditHolds'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _CreditHoldEvent(
+            id: entry['id'] as String? ?? '',
+            customerId: entry['customerId'] as String? ?? '',
+            branchId: entry['branchId'] as String?,
+            status: entry['status'] as String? ?? 'active',
+            reason: entry['reason'] as String? ?? '',
+            createdAt: entry['createdAt'] as String? ?? '',
+            releasedAt: entry['releasedAt'] as String?,
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    final creditLedgerEntries = (payload['creditLedgerEntries'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _CreditLedgerEntry(
+            id: entry['id'] as String? ?? '',
+            customerId: entry['customerId'] as String? ?? '',
+            branchId: entry['branchId'] as String?,
+            entryType: entry['entryType'] as String? ?? 'invoice',
+            amount: (entry['amount'] as num?)?.round() ?? 0,
+            balanceAfter: (entry['balanceAfter'] as num?)?.round() ?? 0,
+            referenceType: entry['referenceType'] as String? ?? '',
+            referenceId: entry['referenceId'] as String? ?? '',
+            note: entry['note'] as String?,
+            createdAt: entry['createdAt'] as String? ?? '',
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    final substitutionRules = (payload['substitutionRules'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _SubstitutionRule(
+            id: entry['id'] as String? ?? '',
+            customerId: entry['customerId'] as String?,
+            branchId: entry['branchId'] as String?,
+            productId: entry['productId'] as String? ?? '',
+            substituteProductId: entry['substituteProductId'] as String? ?? '',
+            status: entry['status'] as String? ?? 'active',
+            reason: entry['reason'] as String? ?? '',
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
+    final substitutionEvents = (payload['substitutionEvents'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (entry) => _SubstitutionEvent(
+            id: entry['id'] as String? ?? '',
+            customerId: entry['customerId'] as String? ?? '',
+            branchId: entry['branchId'] as String?,
+            orderId: entry['orderId'] as String?,
+            productId: entry['productId'] as String? ?? '',
+            substituteProductId: entry['substituteProductId'] as String? ?? '',
+            status: entry['status'] as String? ?? 'proposed',
+            reason: entry['reason'] as String? ?? '',
+            createdAt: entry['createdAt'] as String? ?? '',
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty)
+        .toList(growable: false);
+
     if (!mounted) {
       return;
     }
@@ -810,6 +901,21 @@ class _AedenJourneyState extends State<AedenJourney> {
       _orders
         ..clear()
         ..addAll(orders.isNotEmpty ? orders : existingOrders);
+      _pricingRules
+        ..clear()
+        ..addAll(pricingRules);
+      _creditHolds
+        ..clear()
+        ..addAll(creditHolds);
+      _creditLedgerEntries
+        ..clear()
+        ..addAll(creditLedgerEntries);
+      _substitutionRules
+        ..clear()
+        ..addAll(substitutionRules);
+      _substitutionEvents
+        ..clear()
+        ..addAll(substitutionEvents);
       if (_branches.isNotEmpty && !_branches.any((branch) => branch.id == _selectedBranchId)) {
         _selectedBranchId = _branches.first.id;
       }
@@ -1266,6 +1372,31 @@ class _AedenJourneyState extends State<AedenJourney> {
     return _catalog.firstWhere((product) => product.id == productId).remaining;
   }
 
+  int _priceFor(String productId) {
+    final branchId = _selectedBranchId;
+    final rule = _pricingRules.firstWhere(
+      (entry) =>
+          entry.status == 'active' &&
+          entry.productId == productId &&
+          (entry.branchId == null || entry.branchId == branchId) &&
+          (entry.customerId == null || entry.customerId == _customerId),
+      orElse: () => const _CustomerPricingRule(
+        id: '',
+        customerId: null,
+        branchId: null,
+        productId: null,
+        price: 0,
+        pricingMode: 'fixed',
+        status: 'active',
+        reason: null,
+      ),
+    );
+    if (rule.id.isNotEmpty) {
+      return rule.price;
+    }
+    return _catalog.firstWhere((product) => product.id == productId).price;
+  }
+
   int _cartCount() {
     return _cart.values.fold<int>(0, (sum, value) => sum + value);
   }
@@ -1273,8 +1404,7 @@ class _AedenJourneyState extends State<AedenJourney> {
   int _cartSubtotal() {
     int subtotal = 0;
     for (final entry in _cart.entries) {
-      final product = _catalog.firstWhere((item) => item.id == entry.key);
-      subtotal += product.price * entry.value;
+      subtotal += _priceFor(entry.key) * entry.value;
     }
     return subtotal;
   }
@@ -1395,7 +1525,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                   const SizedBox(height: 16),
                   _ContractRow(
                     label: 'Your contract price',
-                    value: _formatMoney(product.price),
+                    value: _formatMoney(_priceFor(product.id)),
                     tone: _ContractTone.gold,
                   ),
                   const SizedBox(height: 14),
@@ -1406,7 +1536,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                       _showMessage('${product.name} added to cart');
                     },
                     child: Text(
-                      'Add to cart · ${_formatMoney(product.price)}',
+                      'Add to cart · ${_formatMoney(_priceFor(product.id))}',
                     ),
                   ),
                 ],
@@ -2432,7 +2562,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                 return _ProductCard(
                   product: product,
                   inCart: inCart,
-                  money: _formatMoney(product.price),
+                  money: _formatMoney(_priceFor(product.id)),
                   remaining: _remainingFor(product.id),
                   onTap: () => _openProductSheet(product),
                   onAdd: () => _addProduct(product.id),
@@ -2489,7 +2619,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                                 product: product,
                                 quantity: entry.value,
                                 money: _formatMoney(
-                                  product.price * entry.value,
+                                  _priceFor(product.id) * entry.value,
                                 ),
                                 onAdd: () => _addProduct(product.id),
                                 onRemove: () => _removeProduct(product.id),
@@ -3020,6 +3150,47 @@ class _AedenJourneyState extends State<AedenJourney> {
                           ),
                         ),
                       ),
+                    ),
+                  const SizedBox(height: 12),
+                  const Text('Commercial controls'),
+                  const SizedBox(height: 8),
+                  if (_pricingRules.isEmpty)
+                    const _EmptyCard(message: 'No contract pricing rules are active yet.')
+                  else
+                    ..._pricingRules.map(
+                      (rule) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AedenPalette.line),
+                          ),
+                          child: Text(
+                            '${rule.productId ?? 'All products'} | Rs. ${rule.price} | ${rule.status}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _creditHolds.any((hold) => hold.status == 'active')
+                        ? 'Credit hold active for this account.'
+                        : 'No active credit hold on this account.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: _creditHolds.any((hold) => hold.status == 'active')
+                          ? AedenPalette.red
+                          : AedenPalette.green,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (_substitutionEvents.isNotEmpty)
+                    Text(
+                      'Substitution events: ${_substitutionEvents.length}',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                 ],
               ),
@@ -5610,6 +5781,118 @@ class _RecurrenceRule {
   final bool branchScoped;
   final List<int> deliveryDays;
   final String? notes;
+}
+
+class _CustomerPricingRule {
+  const _CustomerPricingRule({
+    required this.id,
+    required this.customerId,
+    required this.branchId,
+    required this.productId,
+    required this.price,
+    required this.pricingMode,
+    required this.status,
+    required this.reason,
+  });
+
+  final String id;
+  final String? customerId;
+  final String? branchId;
+  final String? productId;
+  final int price;
+  final String pricingMode;
+  final String status;
+  final String? reason;
+}
+
+class _CreditHoldEvent {
+  const _CreditHoldEvent({
+    required this.id,
+    required this.customerId,
+    required this.branchId,
+    required this.status,
+    required this.reason,
+    required this.createdAt,
+    required this.releasedAt,
+  });
+
+  final String id;
+  final String customerId;
+  final String? branchId;
+  final String status;
+  final String reason;
+  final String createdAt;
+  final String? releasedAt;
+}
+
+class _CreditLedgerEntry {
+  const _CreditLedgerEntry({
+    required this.id,
+    required this.customerId,
+    required this.branchId,
+    required this.entryType,
+    required this.amount,
+    required this.balanceAfter,
+    required this.referenceType,
+    required this.referenceId,
+    required this.note,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String customerId;
+  final String? branchId;
+  final String entryType;
+  final int amount;
+  final int balanceAfter;
+  final String referenceType;
+  final String referenceId;
+  final String? note;
+  final String createdAt;
+}
+
+class _SubstitutionRule {
+  const _SubstitutionRule({
+    required this.id,
+    required this.customerId,
+    required this.branchId,
+    required this.productId,
+    required this.substituteProductId,
+    required this.status,
+    required this.reason,
+  });
+
+  final String id;
+  final String? customerId;
+  final String? branchId;
+  final String productId;
+  final String substituteProductId;
+  final String status;
+  final String reason;
+}
+
+class _SubstitutionEvent {
+  const _SubstitutionEvent({
+    required this.id,
+    required this.customerId,
+    required this.branchId,
+    required this.orderId,
+    required this.productId,
+    required this.substituteProductId,
+    required this.status,
+    required this.reason,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String customerId;
+  final String? branchId;
+  final String? orderId;
+  final String productId;
+  final String substituteProductId;
+  final String status;
+  final String reason;
+  final String createdAt;
 }
 
 class _StandingDayChip extends StatefulWidget {

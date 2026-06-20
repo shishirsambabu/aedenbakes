@@ -21,6 +21,8 @@ import type {
   Customer360Response,
   CustomerDashboardResponse,
   CustomerNote,
+  CreditHoldEvent,
+  CreditLedgerEntry,
   CustomerTimelineEvent,
   CustomerOnboardingRequest,
   CustomerOrderCreateRequest,
@@ -38,10 +40,13 @@ import type {
   ProductDayCapacity,
   ProductionBatchLine,
   RecurrenceRule,
+  CustomerPricingRule,
   StandingOrder,
   StandingOrderChange,
   StandingOrderPause,
   StandingOrderRun,
+  SubstitutionEvent,
+  SubstitutionRule,
   SupportCase,
   VasyErpContractPreview,
   VasyErpPushResult,
@@ -265,6 +270,11 @@ type ApiStateSnapshot = {
   standingOrderPauses: StandingOrderPause[];
   recurrenceRules: RecurrenceRule[];
   standingOrderChanges: StandingOrderChange[];
+  customerPricingRules: CustomerPricingRule[];
+  creditLedgerEntries: CreditLedgerEntry[];
+  creditHoldEvents: CreditHoldEvent[];
+  substitutionRules: SubstitutionRule[];
+  substitutionEvents: SubstitutionEvent[];
   products: typeof products;
   capacities: typeof capacities;
   slots: typeof slots;
@@ -530,6 +540,71 @@ let standingOrderChanges: StandingOrderChange[] = [
     },
   },
 ];
+let customerPricingRules: CustomerPricingRule[] = [
+  {
+    id: 'price_cafe_nook_loaf',
+    customerId: 'cust_cafe_nook',
+    branchId: 'branch_cafe_nook_main',
+    productId: 'prod_loaf',
+    price: 88,
+    pricingMode: 'fixed',
+    status: 'active',
+    reason: 'Contract price for daily breakfast loaves.',
+    createdAt: '2026-06-19T08:25:00+05:30',
+    updatedAt: '2026-06-19T08:25:00+05:30',
+  },
+  {
+    id: 'price_hotel_lotus_croissant',
+    customerId: 'cust_hotel_lotus',
+    branchId: 'branch_hotel_lotus_main',
+    productId: 'prod_croissant',
+    price: 55,
+    pricingMode: 'fixed',
+    status: 'active',
+    reason: 'Tier B breakfast agreement.',
+    createdAt: '2026-06-19T08:26:00+05:30',
+    updatedAt: '2026-06-19T08:26:00+05:30',
+  },
+];
+let creditLedgerEntries: CreditLedgerEntry[] = [
+  {
+    id: 'ledger_cafe_nook_opening',
+    customerId: 'cust_cafe_nook',
+    branchId: 'branch_cafe_nook_main',
+    entryType: 'invoice',
+    amount: 18400,
+    balanceAfter: 18400,
+    referenceType: 'opening_balance',
+    referenceId: 'seed',
+    note: 'Opening receivables balance.',
+    createdAt: '2026-06-19T08:27:00+05:30',
+  },
+];
+let creditHoldEvents: CreditHoldEvent[] = [
+  {
+    id: 'hold_hotel_lotus_watch',
+    customerId: 'cust_hotel_lotus',
+    branchId: 'branch_hotel_lotus_main',
+    status: 'active',
+    reason: 'Credit review pending after month-end exposure.',
+    createdAt: '2026-06-19T08:28:00+05:30',
+    releasedAt: null,
+  },
+];
+let substitutionRules: SubstitutionRule[] = [
+  {
+    id: 'sub_loaf_to_brioche',
+    customerId: null,
+    branchId: null,
+    productId: 'prod_loaf',
+    substituteProductId: 'prod_danish',
+    status: 'active',
+    reason: 'Fallback substitute when loaf capacity is tight.',
+    createdAt: '2026-06-19T08:29:00+05:30',
+    updatedAt: '2026-06-19T08:29:00+05:30',
+  },
+];
+let substitutionEvents: SubstitutionEvent[] = [];
 let notificationJobs: NotificationJob[] = [];
 let notificationDeliveries: NotificationDelivery[] = [];
 let accountHealthSnapshots: AccountHealthSnapshot[] = [];
@@ -1036,12 +1111,20 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
 
   const slot = slots.find((entry) => entry.id === slotId)!;
   const resolvedSlotId = slot.id;
+  if (hasActiveCreditHold(customer.id)) {
+    const reason = 'Credit hold is active for this account.';
+    recordCustomerOrderRejection(customer, attemptId, reason);
+    persistStateSoon();
+    res.status(400).json({ error: reason });
+    return;
+  }
   const orderItems = items.map((item) => {
     const product = products.find((entry) => entry.id === item.productId)!;
+    const unitPrice = resolveUnitPrice(customer.id, selectedBranch?.id ?? null, item.productId) ?? product.unitPrice;
     return {
       productId: item.productId,
       quantity: item.quantity,
-      unitPrice: product.unitPrice,
+      unitPrice,
     };
   });
   const amountTotal = recalculateItemsTotal(orderItems);
@@ -2165,6 +2248,193 @@ app.get('/account-health', authenticate, requireAnyRole(['owner', 'manager', 'ac
   });
 });
 
+app.get('/commercial/overview', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({
+    pricingRules: customerPricingRules,
+    creditLedgerEntries,
+    creditHoldEvents,
+    substitutionRules,
+    substitutionEvents,
+  });
+});
+
+app.post('/pricing-rules', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const body = req.body as Partial<{
+    customerId: string | null;
+    branchId: string | null;
+    productId: string | null;
+    price: number;
+    pricingMode: CustomerPricingRule['pricingMode'];
+    status: CustomerPricingRule['status'];
+    reason: string;
+  }>;
+  if (!body.productId?.trim() || !Number.isFinite(body.price)) {
+    res.status(400).json({ error: 'productId and price are required' });
+    return;
+  }
+  const rule: CustomerPricingRule = {
+    id: `price_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: body.customerId?.trim() || null,
+    branchId: body.branchId?.trim() || null,
+    productId: body.productId.trim(),
+    price: Math.max(0, Number(body.price)),
+    pricingMode: body.pricingMode ?? 'fixed',
+    status: body.status ?? 'active',
+    reason: body.reason?.trim() || undefined,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  customerPricingRules.unshift(rule);
+  persistStateSoon();
+  res.status(201).json({ pricingRule: rule, pricingRules: customerPricingRules });
+});
+
+app.post('/credit-holds', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const body = req.body as Partial<{ customerId: string; branchId: string | null; reason: string }>;
+  const customerId = body.customerId?.trim();
+  const reason = body.reason?.trim();
+  if (!customerId || !reason) {
+    res.status(400).json({ error: 'customerId and reason are required' });
+    return;
+  }
+  const customer = customers.find((entry) => entry.id === customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+  if (hasActiveCreditHold(customerId)) {
+    res.status(409).json({ error: 'Credit hold already active' });
+    return;
+  }
+  const hold: CreditHoldEvent = {
+    id: `hold_${crypto.randomUUID().slice(0, 8)}`,
+    customerId,
+    branchId: body.branchId?.trim() || null,
+    status: 'active',
+    reason,
+    createdAt: new Date().toISOString(),
+    releasedAt: null,
+  };
+  creditHoldEvents.unshift(hold);
+  customer.riskState = 'blocked';
+  addCreditLedgerEntry({
+    customerId,
+    branchId: hold.branchId,
+    entryType: 'hold',
+    amount: 0,
+    balanceAfter: customer.outstandingBalance,
+    referenceType: 'credit_hold',
+    referenceId: hold.id,
+    note: reason,
+  });
+  recordAudit({
+    kind: 'approval_queued',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Credit hold applied to ${customer.id}. ${reason}`,
+    referenceId: hold.id,
+  });
+  rebuildOperationalState();
+  persistStateSoon();
+  res.status(201).json({ hold, creditHoldEvents, creditLedgerEntries });
+});
+
+app.post('/credit-holds/:id/release', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const hold = creditHoldEvents.find((entry) => entry.id === id);
+  if (!hold) {
+    res.status(404).json({ error: 'Credit hold not found' });
+    return;
+  }
+  if (hold.status === 'released') {
+    res.status(400).json({ error: 'Credit hold already released' });
+    return;
+  }
+  const customer = customers.find((entry) => entry.id === hold.customerId);
+  if (!customer) {
+    res.status(404).json({ error: 'Customer not found' });
+    return;
+  }
+  hold.status = 'released';
+  hold.releasedAt = new Date().toISOString();
+  addCreditLedgerEntry({
+    customerId: hold.customerId,
+    branchId: hold.branchId,
+    entryType: 'release',
+    amount: 0,
+    balanceAfter: customer.outstandingBalance,
+    referenceType: 'credit_hold',
+    referenceId: hold.id,
+    note: `Hold released: ${hold.reason}`,
+  });
+  refreshCustomerRisk(customer);
+  recordAudit({
+    kind: 'approval_approved',
+    actor: req.session?.user.role ?? 'system',
+    summary: `Credit hold released for ${hold.customerId}.`,
+    referenceId: hold.id,
+  });
+  persistStateSoon();
+  res.json({ hold, creditHoldEvents, creditLedgerEntries });
+});
+
+app.post('/substitution-rules', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
+  const body = req.body as Partial<{
+    customerId: string | null;
+    branchId: string | null;
+    productId: string;
+    substituteProductId: string;
+    reason: string;
+  }>;
+  if (!body.productId?.trim() || !body.substituteProductId?.trim() || !body.reason?.trim()) {
+    res.status(400).json({ error: 'productId, substituteProductId, and reason are required' });
+    return;
+  }
+  const rule: SubstitutionRule = {
+    id: `sub_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: body.customerId?.trim() || null,
+    branchId: body.branchId?.trim() || null,
+    productId: body.productId.trim(),
+    substituteProductId: body.substituteProductId.trim(),
+    status: 'active',
+    reason: body.reason.trim(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  substitutionRules.unshift(rule);
+  persistStateSoon();
+  res.status(201).json({ substitutionRule: rule, substitutionRules });
+});
+
+app.post('/substitution-events', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const body = req.body as Partial<{
+    customerId: string;
+    branchId: string | null;
+    orderId: string | null;
+    productId: string;
+    substituteProductId: string;
+    status: SubstitutionEvent['status'];
+    reason: string;
+  }>;
+  if (!body.customerId?.trim() || !body.productId?.trim() || !body.substituteProductId?.trim() || !body.reason?.trim()) {
+    res.status(400).json({ error: 'customerId, productId, substituteProductId, and reason are required' });
+    return;
+  }
+  const event: SubstitutionEvent = {
+    id: `subevt_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: body.customerId.trim(),
+    branchId: body.branchId?.trim() || null,
+    orderId: body.orderId?.trim() || null,
+    productId: body.productId.trim(),
+    substituteProductId: body.substituteProductId.trim(),
+    status: body.status ?? 'proposed',
+    reason: body.reason.trim(),
+    createdAt: new Date().toISOString(),
+  };
+  substitutionEvents.unshift(event);
+  persistStateSoon();
+  res.status(201).json({ substitutionEvent: event, substitutionEvents });
+});
+
 app.post('/account-health/:customerId/actions', authenticate, requireAnyRole(['owner', 'manager', 'accounts']), (req, res) => {
   const customerId = readRouteParam(req.params.customerId);
   const customer = customers.find((entry) => entry.id === customerId);
@@ -3012,6 +3282,15 @@ function buildCustomerDashboard(customerId: string): CustomerDashboardResponse {
       .filter((entry) => entry.customerId === customer.id)
       .slice()
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    pricingRules: customerPricingRules.filter(
+      (rule) => rule.status === 'active' && (rule.customerId === null || rule.customerId === customer.id),
+    ),
+    creditHolds: creditHoldEvents.filter((hold) => hold.customerId === customer.id),
+    creditLedgerEntries: creditLedgerEntries.filter((entry) => entry.customerId === customer.id),
+    substitutionRules: substitutionRules.filter(
+      (rule) => rule.status === 'active' && (rule.customerId === null || rule.customerId === customer.id),
+    ),
+    substitutionEvents: substitutionEvents.filter((event) => event.customerId === customer.id),
     catalog: {
       products,
       capacities,
@@ -3344,6 +3623,10 @@ function recordCustomerOrderRejection(customer: CustomerAccount, attemptId: stri
 }
 
 function refreshCustomerRisk(customer: CustomerAccount) {
+  if (hasActiveCreditHold(customer.id)) {
+    customer.riskState = 'blocked';
+    return;
+  }
   if (customer.creditLimit <= 0) {
     customer.riskState = customer.outstandingBalance > 0 ? 'blocked' : 'healthy';
     return;
@@ -3363,6 +3646,46 @@ function refreshCustomerRisk(customer: CustomerAccount) {
 
 function recalculateItemsTotal(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+}
+
+function hasActiveCreditHold(customerId: string) {
+  return creditHoldEvents.some((entry) => entry.customerId === customerId && entry.status === 'active');
+}
+
+function resolveUnitPrice(customerId: string, branchId: string | null, productId: string) {
+  const product = products.find((entry) => entry.id === productId);
+  if (!product) {
+    return null;
+  }
+
+  const rule = customerPricingRules.find(
+    (entry) =>
+      entry.status === 'active' &&
+      entry.productId === productId &&
+      (entry.customerId === null || entry.customerId === customerId) &&
+      (entry.branchId === null || entry.branchId === branchId),
+  );
+
+  if (!rule) {
+    return product.unitPrice;
+  }
+
+  if (rule.pricingMode === 'discount_percent') {
+    const discount = Math.max(0, Math.min(100, rule.price));
+    return Math.max(0, Math.round(product.unitPrice * (1 - discount / 100)));
+  }
+
+  return Math.max(0, rule.price);
+}
+
+function addCreditLedgerEntry(entry: Omit<CreditLedgerEntry, 'id' | 'createdAt'>) {
+  const record: CreditLedgerEntry = {
+    ...entry,
+    id: `ledger_${crypto.randomUUID().slice(0, 8)}`,
+    createdAt: new Date().toISOString(),
+  };
+  creditLedgerEntries.unshift(record);
+  return record;
 }
 
 function getZoneDate(timeZone: string) {
@@ -3463,10 +3786,11 @@ function generateStandingOrderRuns(serviceDate: string, actor: string) {
           if (!product) {
             return null;
           }
+          const unitPrice = resolveUnitPrice(customer.id, branch?.id ?? null, item.productId) ?? product.unitPrice;
           return {
             productId: item.productId,
             quantity: item.quantity,
-            unitPrice: product.unitPrice,
+            unitPrice,
           };
         })
         .filter((item): item is { productId: string; quantity: number; unitPrice: number } => Boolean(item));
@@ -3478,7 +3802,10 @@ function generateStandingOrderRuns(serviceDate: string, actor: string) {
         const amountTotal = recalculateItemsTotal(orderItems);
         const exposureAmount = standingOrder.schedule.paymentMode === 'credit' ? amountTotal : standingOrder.schedule.paymentMode === 'part-pay' ? Math.ceil(amountTotal / 2) : 0;
 
-        if (standingOrder.schedule.paymentMode !== 'prepaid' && customer.outstandingBalance + exposureAmount > customer.creditLimit) {
+        if (hasActiveCreditHold(customer.id)) {
+          status = 'failed';
+          reason = 'Credit hold is active for this account.';
+        } else if (standingOrder.schedule.paymentMode !== 'prepaid' && customer.outstandingBalance + exposureAmount > customer.creditLimit) {
           status = 'failed';
           reason = `Credit limit blocked standing order generation.`;
         } else {
@@ -3626,6 +3953,11 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     standingOrderPauses: parsed.standingOrderPauses ?? standingOrderPauses,
     recurrenceRules: parsed.recurrenceRules ?? recurrenceRules,
     standingOrderChanges: parsed.standingOrderChanges ?? standingOrderChanges,
+    customerPricingRules: parsed.customerPricingRules ?? customerPricingRules,
+    creditLedgerEntries: parsed.creditLedgerEntries ?? creditLedgerEntries,
+    creditHoldEvents: parsed.creditHoldEvents ?? creditHoldEvents,
+    substitutionRules: parsed.substitutionRules ?? substitutionRules,
+    substitutionEvents: parsed.substitutionEvents ?? substitutionEvents,
     products: parsed.products ?? products,
     capacities: parsed.capacities ?? capacities,
     slots: parsed.slots ?? slots,
@@ -3697,6 +4029,11 @@ async function persistState() {
     standingOrderPauses,
     recurrenceRules,
     standingOrderChanges,
+    customerPricingRules,
+    creditLedgerEntries,
+    creditHoldEvents,
+    substitutionRules,
+    substitutionEvents,
     products,
     capacities,
     slots,
@@ -3787,6 +4124,11 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   standingOrderPauses.splice(0, standingOrderPauses.length, ...snapshot.standingOrderPauses);
   recurrenceRules.splice(0, recurrenceRules.length, ...snapshot.recurrenceRules);
   standingOrderChanges.splice(0, standingOrderChanges.length, ...snapshot.standingOrderChanges);
+  customerPricingRules.splice(0, customerPricingRules.length, ...snapshot.customerPricingRules);
+  creditLedgerEntries.splice(0, creditLedgerEntries.length, ...snapshot.creditLedgerEntries);
+  creditHoldEvents.splice(0, creditHoldEvents.length, ...snapshot.creditHoldEvents);
+  substitutionRules.splice(0, substitutionRules.length, ...snapshot.substitutionRules);
+  substitutionEvents.splice(0, substitutionEvents.length, ...snapshot.substitutionEvents);
   products.splice(0, products.length, ...snapshot.products);
   capacities.splice(0, capacities.length, ...snapshot.capacities);
   slots.splice(0, slots.length, ...snapshot.slots);

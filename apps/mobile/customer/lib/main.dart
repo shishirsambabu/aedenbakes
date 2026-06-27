@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'dart:async';
 
+import 'package:aeden_brand/aeden_brand.dart';
+import 'package:sendotp_flutter_sdk/sendotp_flutter_sdk.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -13,128 +14,11 @@ const String _apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'http://127.0.0.1:4000',
 );
-ThemeData _buildAedenTheme() {
-  final baseTextTheme = GoogleFonts.interTextTheme();
-
-  return ThemeData(
-    useMaterial3: true,
-    brightness: Brightness.light,
-    scaffoldBackgroundColor: AedenPalette.cream,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: AedenPalette.gold,
-      brightness: Brightness.light,
-      primary: AedenPalette.gold,
-      secondary: AedenPalette.ink,
-      surface: AedenPalette.cream,
-    ),
-    textTheme: baseTextTheme.copyWith(
-      displayLarge: GoogleFonts.fraunces(
-        textStyle: baseTextTheme.displayLarge,
-        fontWeight: FontWeight.w600,
-        color: AedenPalette.ink,
-      ),
-      displayMedium: GoogleFonts.fraunces(
-        textStyle: baseTextTheme.displayMedium,
-        fontWeight: FontWeight.w600,
-        color: AedenPalette.ink,
-      ),
-      headlineLarge: GoogleFonts.fraunces(
-        textStyle: baseTextTheme.headlineLarge,
-        fontWeight: FontWeight.w600,
-        color: AedenPalette.ink,
-      ),
-      headlineMedium: GoogleFonts.fraunces(
-        textStyle: baseTextTheme.headlineMedium,
-        fontWeight: FontWeight.w600,
-        color: AedenPalette.ink,
-      ),
-      headlineSmall: GoogleFonts.fraunces(
-        textStyle: baseTextTheme.headlineSmall,
-        fontWeight: FontWeight.w600,
-        color: AedenPalette.ink,
-      ),
-      titleLarge: GoogleFonts.fraunces(
-        textStyle: baseTextTheme.titleLarge,
-        fontWeight: FontWeight.w600,
-        color: AedenPalette.ink,
-      ),
-      titleMedium: baseTextTheme.titleMedium?.copyWith(
-        fontWeight: FontWeight.w700,
-        color: AedenPalette.ink,
-      ),
-      bodyLarge: baseTextTheme.bodyLarge?.copyWith(
-        color: AedenPalette.grey,
-        height: 1.5,
-      ),
-      bodyMedium: baseTextTheme.bodyMedium?.copyWith(
-        color: AedenPalette.grey,
-        height: 1.5,
-      ),
-      labelLarge: baseTextTheme.labelLarge?.copyWith(
-        fontWeight: FontWeight.w700,
-        letterSpacing: 0.2,
-      ),
-    ),
-    dividerTheme: const DividerThemeData(
-      color: AedenPalette.line,
-      space: 1,
-      thickness: 1,
-    ),
-    inputDecorationTheme: InputDecorationTheme(
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: AedenPalette.line),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: AedenPalette.line),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: AedenPalette.gold, width: 1.4),
-      ),
-      labelStyle: const TextStyle(color: AedenPalette.grey),
-      hintStyle: const TextStyle(color: AedenPalette.muted),
-    ),
-    filledButtonTheme: FilledButtonThemeData(
-      style: FilledButton.styleFrom(
-        backgroundColor: AedenPalette.gold,
-        foregroundColor: Colors.white,
-        minimumSize: const Size.fromHeight(52),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w800),
-      ),
-    ),
-    outlinedButtonTheme: OutlinedButtonThemeData(
-      style: OutlinedButton.styleFrom(
-        foregroundColor: AedenPalette.ink,
-        minimumSize: const Size.fromHeight(52),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        side: const BorderSide(color: AedenPalette.line),
-        textStyle: const TextStyle(fontWeight: FontWeight.w700),
-      ),
-    ),
-    textButtonTheme: TextButtonThemeData(
-      style: TextButton.styleFrom(
-        foregroundColor: AedenPalette.gold,
-        textStyle: const TextStyle(fontWeight: FontWeight.w700),
-      ),
-    ),
-    chipTheme: ChipThemeData(
-      backgroundColor: Colors.white,
-      selectedColor: AedenPalette.ink,
-      disabledColor: AedenPalette.cream,
-      side: const BorderSide(color: AedenPalette.line),
-      labelStyle:
-          baseTextTheme.labelLarge?.copyWith(color: AedenPalette.grey) ??
-          const TextStyle(),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-    ),
-  );
-}
+const String _msg91WidgetId = String.fromEnvironment('MSG91_WIDGET_ID');
+const String _msg91AuthToken = String.fromEnvironment('MSG91_AUTH_TOKEN');
+const bool _useMsg91Otp = _msg91WidgetId.length > 0 && _msg91AuthToken.length > 0;
+const int _otpDigits = 4;
+ThemeData _buildAedenTheme() => buildAedenBrandTheme();
 
 class AedenBakesCustomerApp extends StatelessWidget {
   const AedenBakesCustomerApp({super.key});
@@ -406,6 +290,8 @@ class _AedenJourneyState extends State<AedenJourney> {
   int _partPaymentPercent = 30;
   bool _otpSent = false;
   String? _otpChallengeId;
+  String? _otpReqId;
+  String? _otpAccessToken;
   String? _otpPreviewCode;
   String? _otpVerificationToken;
   final TextEditingController _otpController = TextEditingController();
@@ -441,6 +327,9 @@ class _AedenJourneyState extends State<AedenJourney> {
   @override
   void initState() {
     super.initState();
+    if (_useMsg91Otp) {
+      OTPWidget.initializeWidget(_msg91WidgetId, _msg91AuthToken);
+    }
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _phase.index < _JourneyPhase.home.index) {
         return;
@@ -560,6 +449,31 @@ class _AedenJourneyState extends State<AedenJourney> {
     }
   }
 
+  String? _firstString(Map<String, dynamic>? payload, List<String> keys) {
+    if (payload == null) {
+      return null;
+    }
+
+    for (final key in keys) {
+      final value = payload[key];
+      if (value is String && value.trim().isNotEmpty) {
+        return value.trim();
+      }
+    }
+
+    final nested = payload['data'];
+    if (nested is Map<String, dynamic>) {
+      for (final key in keys) {
+        final value = nested[key];
+        if (value is String && value.trim().isNotEmpty) {
+          return value.trim();
+        }
+      }
+    }
+
+    return null;
+  }
+
   void _advanceFromSplash() {
     setState(() {
       _phase = _JourneyPhase.auth;
@@ -576,26 +490,55 @@ class _AedenJourneyState extends State<AedenJourney> {
       }
 
       try {
-        final response = await http.post(
-          Uri.parse('$_apiBaseUrl/auth/otp/request'),
-          headers: const {'Content-Type': 'application/json'},
-          body: '{"phone":"$phone"}',
-        );
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          throw Exception('OTP request failed with status ${response.statusCode}');
-        }
-        final payload = response.body.isNotEmpty
-            ? (jsonDecode(response.body) as Map<String, dynamic>)
-            : <String, dynamic>{};
-        setState(() {
-          _otpSent = true;
-          _otpChallengeId = payload['challengeId'] as String?;
-          _otpPreviewCode = payload['debugCode'] as String?;
-        });
-        if (_otpPreviewCode != null) {
-          _showMessage('OTP sent. Local test code: $_otpPreviewCode');
+        if (_useMsg91Otp) {
+          final response = await OTPWidget.sendOTP({
+            'identifier': '91$phone',
+          });
+          final reqId = _firstString(response, ['reqId', 'requestId', 'message', 'id']);
+          final accessToken = _firstString(
+            response,
+            ['access-token', 'accessToken', 'access_token', 'token'],
+          );
+          setState(() {
+            _otpSent = true;
+            _otpChallengeId = reqId;
+            _otpReqId = reqId;
+            _otpAccessToken = accessToken;
+            _otpPreviewCode = null;
+          });
+          if (accessToken != null) {
+            setState(() {
+              _otpVerificationToken = accessToken;
+              _phase = _JourneyPhase.onboard;
+              _onboardStep = 0;
+            });
+            _showMessage('OTP already verified on MSG91.');
+          } else {
+            _showMessage('OTP sent to +91 $phone');
+          }
         } else {
-          _showMessage('OTP sent to +91 $phone');
+          final response = await http.post(
+            Uri.parse('$_apiBaseUrl/auth/otp/request'),
+            headers: const {'Content-Type': 'application/json'},
+            body: '{"phone":"$phone"}',
+          );
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw Exception('OTP request failed with status ${response.statusCode}');
+          }
+          final payload = response.body.isNotEmpty
+              ? (jsonDecode(response.body) as Map<String, dynamic>)
+              : <String, dynamic>{};
+          setState(() {
+            _otpSent = true;
+            _otpChallengeId = payload['challengeId'] as String?;
+            _otpReqId = payload['challengeId'] as String?;
+            _otpPreviewCode = payload['debugCode'] as String?;
+          });
+          if (_otpPreviewCode != null) {
+            _showMessage('OTP sent. Verification code is available in this environment.');
+          } else {
+            _showMessage('OTP sent to +91 $phone');
+          }
         }
       } catch (error) {
         _showMessage(error.toString());
@@ -603,15 +546,36 @@ class _AedenJourneyState extends State<AedenJourney> {
       return;
     }
 
-    final challengeId = _otpChallengeId;
+    final challengeId = _otpChallengeId ?? _otpReqId;
     final phone = _phoneController.text.replaceAll(RegExp(r'\D'), '');
     final code = _otpController.text.trim();
-    if (challengeId == null || code.length != 6) {
-      _showMessage('Enter the 6-digit code');
+    if (challengeId == null || code.length != _otpDigits) {
+      _showMessage('Enter the $_otpDigits-digit code');
       return;
     }
 
     try {
+      if (_useMsg91Otp) {
+        final response = await OTPWidget.verifyOTP({
+          'reqId': challengeId,
+          'otp': code,
+        });
+        final accessToken = _firstString(
+          response,
+          ['access-token', 'accessToken', 'access_token', 'token'],
+        );
+        if (accessToken == null) {
+          throw Exception('OTP verification failed');
+        }
+        setState(() {
+          _otpAccessToken = accessToken;
+          _otpVerificationToken = accessToken;
+          _phase = _JourneyPhase.onboard;
+          _onboardStep = 0;
+        });
+        return;
+      }
+
       final response = await http.post(
         Uri.parse('$_apiBaseUrl/auth/otp/verify'),
         headers: const {'Content-Type': 'application/json'},
@@ -638,6 +602,62 @@ class _AedenJourneyState extends State<AedenJourney> {
     }
   }
 
+  Future<void> _retryOtp() async {
+    if (!_otpSent) {
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+    final phone = _phoneController.text.replaceAll(RegExp(r'\D'), '');
+    try {
+      if (_useMsg91Otp) {
+        if (_otpReqId == null) {
+          _showMessage('Send OTP first');
+          return;
+        }
+        final response = await OTPWidget.retryOTP({
+          'reqId': _otpReqId,
+        });
+        final reqId = _firstString(response, ['reqId', 'requestId', 'message', 'id']);
+        if (reqId != null) {
+          setState(() {
+            _otpReqId = reqId;
+            _otpChallengeId = reqId;
+            _otpAccessToken = null;
+            _otpVerificationToken = null;
+            _otpController.clear();
+          });
+        }
+        _showMessage('OTP resent to +91 $phone');
+        return;
+      }
+
+      final response = await http.post(
+        Uri.parse('$_apiBaseUrl/auth/otp/request'),
+        headers: const {'Content-Type': 'application/json'},
+        body: '{"phone":"$phone"}',
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final message = _extractApiError(response, 'OTP resend failed');
+        throw Exception(message);
+      }
+      final payload = response.body.isNotEmpty
+          ? (jsonDecode(response.body) as Map<String, dynamic>)
+          : <String, dynamic>{};
+      setState(() {
+        _otpChallengeId = payload['challengeId'] as String?;
+        _otpReqId = payload['challengeId'] as String?;
+        _otpPreviewCode = payload['debugCode'] as String?;
+        _otpAccessToken = null;
+        _otpVerificationToken = null;
+        _otpController.clear();
+      });
+      _showMessage('OTP resent to +91 $phone');
+    } catch (error) {
+      _showMessage(error.toString());
+    }
+  }
+
   void _nextOnboardingStep() {
     FocusScope.of(context).unfocus();
     if (_onboardStep < 3) {
@@ -653,6 +673,21 @@ class _AedenJourneyState extends State<AedenJourney> {
   }
 
   Future<void> _approveApplication() async {
+    if (!_gstVerified) {
+      _showMessage('Verify GST before submitting the account');
+      return;
+    }
+
+    if (!_hasRequiredDocuments()) {
+      _showMessage('Upload GST certificate, FSSAI license, and cancelled cheque before submitting');
+      return;
+    }
+
+    if (_otpVerificationToken == null && _otpAccessToken == null) {
+      _showMessage('Verify the OTP before submitting');
+      return;
+    }
+
     await _submitApplication();
   }
 
@@ -672,7 +707,7 @@ class _AedenJourneyState extends State<AedenJourney> {
 
   Future<void> _submitApplication() async {
     try {
-      final otpToken = _otpVerificationToken;
+      final otpToken = _otpVerificationToken ?? _otpAccessToken;
       final response = await http.post(
         Uri.parse('$_apiBaseUrl/customer/onboard'),
         headers: const {'Content-Type': 'application/json'},
@@ -682,6 +717,9 @@ class _AedenJourneyState extends State<AedenJourney> {
           'loginId': _phoneController.text.replaceAll(RegExp(r'\D'), ''),
           'defaultAddress': _addressController.text.trim(),
           'otpToken': otpToken,
+          if (_otpAccessToken != null) 'otpAccessToken': _otpAccessToken,
+          'gstVerified': _gstVerified,
+          'documents': _buildOnboardingDocuments(),
           'tier': _accountTier,
           'creditLimit': _requestedCreditLimit,
         }),
@@ -1448,6 +1486,36 @@ class _AedenJourneyState extends State<AedenJourney> {
     });
   }
 
+  bool _hasRequiredDocuments() {
+    return _documentNames.every(_uploadedDocs.contains);
+  }
+
+  bool _canSubmitOnboarding() {
+    return _cloudStorageEnabled &&
+        _gstVerified &&
+        _hasRequiredDocuments() &&
+        _otpVerificationToken != null &&
+        _businessController.text.trim().isNotEmpty &&
+        _addressController.text.trim().isNotEmpty;
+  }
+
+  List<Map<String, dynamic>> _buildOnboardingDocuments() {
+    return _documentNames.map((name) {
+      final documentType = switch (name) {
+        'GST certificate' => 'gst',
+        'FSSAI license' => 'fssai',
+        'Cancelled cheque' => 'cheque',
+        _ => 'other',
+      };
+      return <String, dynamic>{
+        'documentType': documentType,
+        'title': name,
+        'fileName': '${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}.pdf',
+        'verified': false,
+      };
+    }).toList(growable: false);
+  }
+
   int _remainingFor(String productId) {
     return _catalog.firstWhere((product) => product.id == productId).remaining;
   }
@@ -1902,12 +1970,12 @@ class _AedenJourneyState extends State<AedenJourney> {
                             children: [
                               _LabelCapsule(
                                 label: 'Verification code',
-                                child: TextField(
+                                  child: TextField(
                                   controller: _otpController,
                                   keyboardType: TextInputType.number,
-                                  maxLength: 6,
+                                  maxLength: _otpDigits,
                                   decoration: const InputDecoration(
-                                    hintText: '6-digit code',
+                                    hintText: '4-digit code',
                                     counterText: '',
                                   ),
                                 ),
@@ -1925,7 +1993,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                                     borderRadius: BorderRadius.circular(14),
                                   ),
                                   child: Text(
-                                    'Local test code: $_otpPreviewCode',
+                                    'Verification code: $_otpPreviewCode',
                                     textAlign: TextAlign.center,
                                     style: Theme.of(context).textTheme.bodySmall
                                         ?.copyWith(color: AedenPalette.brown),
@@ -1936,6 +2004,11 @@ class _AedenJourneyState extends State<AedenJourney> {
                                 'Enter the code sent to +91 ${_phoneController.text}',
                                 style: Theme.of(context).textTheme.bodySmall
                                     ?.copyWith(color: AedenPalette.grey),
+                              ),
+                              const SizedBox(height: 8),
+                              TextButton(
+                                onPressed: _retryOtp,
+                                child: const Text('Resend OTP'),
                               ),
                             ],
                           )
@@ -2154,16 +2227,24 @@ class _AedenJourneyState extends State<AedenJourney> {
                                   const SizedBox(width: 10),
                                   FilledButton(
                                     onPressed: () {
+                                      final gstin = _gstController.text.trim().toUpperCase();
+                                      final validFormat = RegExp(
+                                        r'^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$',
+                                      ).hasMatch(gstin);
+                                      if (!validFormat) {
+                                        _showMessage('Enter a valid 15-character GSTIN');
+                                        return;
+                                      }
                                       setState(() {
                                         _gstVerified = true;
                                       });
-                                      _showMessage('GSTIN verified with GSTN');
+                                      _showMessage('GSTIN format checked. Admin verification is still required.');
                                     },
                                     style: FilledButton.styleFrom(
                                       minimumSize: const Size(92, 52),
                                     ),
                                     child: Text(
-                                      _gstVerified ? 'Verified' : 'Verify',
+                                      _gstVerified ? 'Checked' : 'Check',
                                     ),
                                   ),
                                 ],
@@ -2171,7 +2252,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                               if (_gstVerified) ...[
                                 const SizedBox(height: 10),
                                 const _SuccessCallout(
-                                  title: 'Verified',
+                                  title: 'Format checked',
                                   subtitle: 'HOTEL CRESCENT PVT LTD · Active',
                                 ),
                               ],
@@ -2184,9 +2265,9 @@ class _AedenJourneyState extends State<AedenJourney> {
                               const SizedBox(height: 8),
                               if (!_cloudStorageEnabled) ...[
                                 const _InfoBanner(
-                                  title: 'Demo storage mode',
+                                  title: 'File storage unavailable',
                                   subtitle:
-                                      'R2 is not connected yet, so document uploads stay local for the demo. Once storage is enabled, this step will sync to cloud storage.',
+                                      'Files are not uploaded in this environment. These controls only record local placeholders.',
                                 ),
                                 const SizedBox(height: 10),
                               ],
@@ -2207,7 +2288,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                                       _showMessage(
                                         done
                                             ? '$name removed'
-                                            : '$name uploaded',
+                                            : '$name attached locally only',
                                       );
                                     },
                                   ),
@@ -2372,7 +2453,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                   Text(
                     _cloudStorageEnabled
                         ? 'Aeden Bakes is reviewing your business details and documents. Most accounts are approved within 2 working hours.'
-                        : 'Aeden Bakes is reviewing your business details. Document uploads are running in demo mode until cloud storage is enabled.',
+                        : 'Aeden Bakes is reviewing your business details. Document uploads stay local until storage is enabled for this account.',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyLarge,
                   ),
@@ -2412,8 +2493,19 @@ class _AedenJourneyState extends State<AedenJourney> {
                     ),
                   ),
                   const SizedBox(height: 18),
+                  if (!_canSubmitOnboarding())
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        'Check the GSTIN format and attach the GST certificate, FSSAI license, and cancelled cheque. Production submission also requires live file storage and admin review.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AedenPalette.brown,
+                        ),
+                      ),
+                    ),
                   FilledButton(
-                    onPressed: _approveApplication,
+                    onPressed: _canSubmitOnboarding() ? _approveApplication : null,
                     style: FilledButton.styleFrom(
                       backgroundColor: AedenPalette.ink,
                       foregroundColor: AedenPalette.ivory,
@@ -2895,7 +2987,7 @@ class _AedenJourneyState extends State<AedenJourney> {
                     runSpacing: 8,
                     children: [
                       _PremiumBadge(text: '${_notifications.length} messages'),
-                      _PremiumBadge(text: 'WhatsApp ready'),
+                      _PremiumBadge(text: 'WhatsApp not connected'),
                       _PremiumBadge(text: 'Invoice reminders'),
                     ],
                   ),
@@ -3020,9 +3112,9 @@ class _AedenJourneyState extends State<AedenJourney> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const _SuccessCallout(
-                    title: 'FSSAI and GST verified',
+                    title: 'KYC review required',
                     subtitle:
-                        'Ready for contract pricing and invoice checkout.',
+                        'GST and FSSAI require document verification before commercial activation.',
                   ),
                   const SizedBox(height: 12),
                   FilledButton(
@@ -3523,7 +3615,7 @@ class AedenPalette {
   static const red = Color(0xFFB91C1C);
   static const redSoft = Color(0xFFFEF2F2);
   static const blue = Color(0xFFB45309);
-  static const blueSoft = Color(0xFFFBE7D0);
+  static const blueSoft = Color(0xFFF6E7D8);
 }
 
 class _DarkOrbs extends StatelessWidget {
@@ -4028,7 +4120,7 @@ class _UploadTile extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Text(
-              uploaded ? 'Uploaded' : 'Upload',
+              uploaded ? 'Attached locally' : 'Attach locally',
               style: Theme.of(context).textTheme.labelLarge?.copyWith(
                 color: uploaded ? AedenPalette.green : AedenPalette.gold,
                 fontSize: 11,
@@ -5114,16 +5206,16 @@ class _ContractRow extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: switch (tone) {
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: switch (tone) {
             _ContractTone.gold => AedenPalette.goldLine,
-            _ContractTone.blue => const Color(0xFFC7DBFE),
-          },
+            _ContractTone.blue => const Color(0xFFE7D2B6),
+            },
+          ),
         ),
-      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [

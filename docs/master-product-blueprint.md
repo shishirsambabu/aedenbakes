@@ -667,6 +667,161 @@ Build batches:
 - Batch 12.3: credit and risk reporting
 - Batch 12.4: margin, returns, and delivery intelligence
 
+### Phase 13: Brand System And Trust Layer
+
+Purpose:
+- unify the visual system across customer, production, delivery, and super-admin
+- remove demo-looking affordances from product surfaces
+- tighten onboarding, authentication, and loading states
+- standardize color, typography, card treatment, and status language
+- make the apps feel like one production system instead of separate prototypes
+
+Modules:
+- Shared Brand Tokens
+- App Shell Harmonizer
+- Authentication and Onboarding Refinement
+- Empty, Loading, and Error State System
+- Demo and Environment Guarding
+- Cross-App Visual QA
+
+Roles:
+- `owner`
+- `super_admin`
+- `manager`
+- `production`
+- `delivery`
+- `customer_admin`
+- `customer_user`
+
+Tables:
+- `brand_tokens`
+- `ui_preferences`
+- `feature_flags`
+- `environment_flags`
+- `visual_qa_runs`
+
+State machines:
+- UI surface profile: `draft -> reviewed -> approved -> published`
+- Feature flag: `off -> staged -> on`
+- Visual QA run: `queued -> running -> passed` with `failed`, `needs_fix`
+
+Build batches:
+- Batch 13.1: shared brand tokens and typography
+- Batch 13.2: customer app trust-flow cleanup
+- Batch 13.3: production, delivery, and super-admin visual alignment
+- Batch 13.4: visual QA, consistency hardening, and release polish
+
+### Phase 14: Verification And Onboarding Integrity
+
+Purpose:
+- make OTP a real verification gate
+- require complete business KYC before onboarding can be submitted
+- show missing-document status clearly to the customer
+- return explicit validation reasons from the API
+- remove any remaining demo-style onboarding ambiguity
+
+Modules:
+- OTP Request and Verification
+- Onboarding Readiness Gate
+- Required Document Checklist
+- Onboarding Validation API
+- Customer Submission Review
+- Notification Handoff for OTP
+
+Roles:
+- `customer_admin`
+- `customer_user`
+- `super_admin`
+- `manager`
+- `support`
+- `system`
+
+Tables:
+- `otp_challenges`
+- `otp_verifications`
+- `customer_onboarding_requests`
+- `onboarding_documents`
+- `onboarding_validation_events`
+- `notification_jobs`
+- `notification_deliveries`
+
+State machines:
+- OTP challenge: `created -> sent -> verified -> expired`
+- Onboarding request: `draft -> ready -> submitted -> approved -> rejected`
+- KYC document: `missing -> uploaded -> verified -> rejected`
+- Submission validation: `blocked -> incomplete -> valid`
+
+Build batches:
+- Batch 14.1: OTP delivery integration and verification
+- Batch 14.2: required-doc checklist and submission gating
+- Batch 14.3: explicit API rejection reasons and validation logs
+- Batch 14.4: onboarding review UX and audit cleanup
+
+### Phase 15: Admin App And Operations Console
+
+Purpose:
+- build the missing bakery admin app shown in the HTML reference
+- give operators a focused command center for product master, production, orders, accounts, and receivables
+- keep it separate from the super-admin portal so daily operations stay fast
+- support product creation and activation, order review, KYC approvals, production sheet actions, returns, and collections follow-up
+- expose the daily bakery controls that a real operations team needs, not just analytics and drilldown
+
+Modules:
+- Admin Dashboard
+- Product Master
+- Product Availability Controls
+- Incoming Customer Applications
+- Incoming Orders Desk
+- Business Accounts And KYC
+- Order Exception Desk
+- Returns And Credit Notes
+- Production Sheet
+- Receivables And Collections
+- Order Review And Modification
+- Customer Drilldown
+
+Roles:
+- `owner`
+- `manager`
+- `admin_ops`
+- `accounts`
+- `production`
+- `support`
+
+Tables:
+- `admin_dashboards`
+- `admin_widgets`
+- `admin_views`
+- `product_master`
+- `product_availability_changes`
+- `customer_applications`
+- `customer_application_reviews`
+- `admin_order_actions`
+- `admin_account_actions`
+- `admin_return_actions`
+- `product_publish_events`
+- `account_aging_snapshots`
+- `collection_tasks`
+- `daily_production_sheets`
+
+State machines:
+- Admin view: `dashboard -> orders -> accounts -> production -> receivables`
+- Product availability: `on -> throttled -> off`
+- Product lifecycle: `draft -> ready -> published -> hidden -> retired`
+- Customer application review: `submitted -> under_review -> approved -> rejected -> needs_more_info`
+- Order review action: `queued -> approved -> modified -> committed`
+- Order exception: `open -> reviewed -> approved -> rejected -> applied`
+- Return handling: `captured -> verified -> credited -> closed`
+- Collection task: `open -> contacted -> promised -> cleared -> escalated`
+
+Build batches:
+- Batch 15.1: admin shell and navigation model
+- Batch 15.2: product master and availability controls
+- Batch 15.3: incoming orders and production board
+- Batch 15.4: customer application review and KYC queue
+- Batch 15.5: receivables, returns, and collection follow-up
+- Batch 15.6: order modification audit and exception handling
+
 ## No-Gap Coverage Check
 
 These are the business concerns that must exist somewhere in the roadmap.
@@ -675,6 +830,7 @@ These are the business concerns that must exist somewhere in the roadmap.
 | --- | --- |
 | Branch-wise ordering | Phase 6 |
 | Customer roles and approvals | Phase 6 |
+| OTP and onboarding integrity | Phase 14 |
 | Standing orders and subscriptions | Phase 7 |
 | Substitution handling | Phase 8 |
 | Push notifications | Phase 9 |
@@ -685,6 +841,8 @@ These are the business concerns that must exist somewhere in the roadmap.
 | Document storage | Phase 10 and Phase 4 |
 | Route and delivery proof confidence | Phase 11 |
 | Customer analytics | Phase 12 |
+| Brand consistency and trust cues | Phase 13 |
+| Admin app and operations console | Phase 15 |
 | Production batch control | Phases 1 and 2 |
 | Admin edits and overrides | Phase 2 |
 | Returns and partials | Phase 2 and Phase 11 |

@@ -1,9 +1,14 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { ROLE_PERMISSIONS, canAccessCustomerResource, hasAnyRole, hasPermission } from './policy.js';
+import type { AuthPermission, AuthRole } from './policy.js';
+import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from './security.js';
 import {
   capacities,
   customers,
@@ -25,6 +30,7 @@ import type {
   CreditLedgerEntry,
   CustomerTimelineEvent,
   CustomerOnboardingRequest,
+  CustomerOnboardingDocument,
   CustomerOrderCreateRequest,
   CustomerPortalAuthRecord,
   CustomerUserMembership,
@@ -49,18 +55,234 @@ import type {
   SubstitutionRule,
   SupportCase,
   VasyErpContractPreview,
-  VasyErpPushResult,
 } from '@aeden-bakes/shared';
 
+const isProduction = process.env.NODE_ENV === 'production';
+const configuredOrigins = (process.env.CORS_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedOrigins =
+  configuredOrigins.length > 0
+    ? configuredOrigins
+    : ['http://127.0.0.1:3000', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://localhost:5173'];
+const allowDemoAccounts = !isProduction && process.env.ENABLE_DEMO_ACCOUNTS !== 'false';
+const exposeOtpDebugCode = !isProduction && process.env.EXPOSE_OTP_DEBUG_CODE === 'true';
+const allowPrototypeOnboarding = !isProduction && process.env.ENABLE_PROTOTYPE_ONBOARDING === 'true';
+const msg91WidgetId = process.env.MSG91_WIDGET_ID?.trim() ?? '';
+const msg91AuthKey = process.env.MSG91_AUTHKEY?.trim() ?? '';
+const msg91OtpEnabled = Boolean(msg91WidgetId && msg91AuthKey);
+const vasyConfigured = Boolean(process.env.VASY_API_BASE_URL?.trim() && process.env.VASY_API_KEY?.trim());
+
+validateRuntimeConfiguration();
+
 const app = express();
+app.disable('x-powered-by');
+app.use(helmet());
+app.use((_req, res, next) => {
+  res.setHeader('x-request-id', crypto.randomUUID());
+  next();
+});
 app.use(
   cors({
-    origin: true,
+    origin(origin, callback) {
+      callback(null, !origin || allowedOrigins.includes(origin));
+    },
   }),
 );
-app.use(express.json());
-const allowDemoAccounts = process.env.NODE_ENV !== 'production' || process.env.ENABLE_DEMO_ACCOUNTS === 'true';
-const exposeOtpDebugCode = process.env.NODE_ENV !== 'production' || process.env.EXPOSE_OTP_DEBUG_CODE === 'true';
+app.use(express.json({ limit: '1mb' }));
+
+function validateRuntimeConfiguration() {
+  const hasPartialMsg91Config = Boolean(msg91WidgetId || msg91AuthKey) && !msg91OtpEnabled;
+  if (hasPartialMsg91Config) {
+    throw new Error('MSG91 configuration is incomplete. Set both MSG91_WIDGET_ID and MSG91_AUTHKEY.');
+  }
+
+  if (!isProduction) {
+    return;
+  }
+
+  const missing: string[] = [];
+  if (configuredOrigins.length === 0) {
+    missing.push('CORS_ORIGINS');
+  }
+  if (!process.env.DATABASE_URL?.trim()) {
+    missing.push('DATABASE_URL');
+  }
+  if (!msg91OtpEnabled) {
+    missing.push('MSG91_WIDGET_ID and MSG91_AUTHKEY');
+  }
+  missing.push('secure authentication migration (Recovery Phase R1)');
+
+  if (missing.length > 0) {
+    throw new Error(`Unsafe production configuration. Missing: ${missing.join(', ')}`);
+  }
+}
+
+function normalizePhoneNumber(phone: string | undefined) {
+  return phone?.replace(/\D/g, '').trim() ?? '';
+}
+
+function migrateLegacyPassword(record: AuthRecord) {
+  if (!record.passwordHash && record.password) {
+    record.passwordHash = hashPassword(record.password);
+  }
+  delete record.password;
+}
+
+function parseJsonObject(input: string) {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractMsg91ReqId(payload: Record<string, unknown> | null) {
+  if (!payload) {
+    return null;
+  }
+
+  const directCandidates = ['reqId', 'requestId', 'message', 'id'] as const;
+  for (const key of directCandidates) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  const data = payload.data;
+  if (typeof data === 'object' && data !== null) {
+    const nested = data as Record<string, unknown>;
+    for (const key of directCandidates) {
+      const value = nested[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractFirstString(payload: Record<string, unknown> | null, keys: readonly string[]) {
+  if (!payload) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+async function sendMsg91Otp(phone: string) {
+  if (!msg91OtpEnabled) {
+    throw new Error('MSG91 OTP is not configured');
+  }
+
+  const response = await fetch('https://api.msg91.com/api/v5/widget/sendOtp', {
+    method: 'POST',
+    headers: {
+      authkey: msg91AuthKey,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      widgetId: msg91WidgetId,
+      identifier: phone,
+    }),
+  });
+
+  const text = await response.text();
+  const payload = parseJsonObject(text);
+
+  if (!response.ok) {
+    const errorMessage =
+      (typeof payload?.message === 'string' ? payload.message : undefined) ??
+      (typeof payload?.error === 'string' ? payload.error : undefined) ??
+      text.trim() ??
+      `MSG91 sendOtp failed with status ${response.status}`;
+    throw new Error(errorMessage);
+  }
+
+  const reqId = extractMsg91ReqId(payload);
+  if (!reqId) {
+    throw new Error('MSG91 sendOtp response did not include a reqId');
+  }
+
+  return {
+    reqId,
+    raw: payload,
+  };
+}
+
+async function verifyMsg91Otp(reqId: string, otp: string) {
+  if (!msg91OtpEnabled) {
+    throw new Error('MSG91 OTP is not configured');
+  }
+
+  const response = await fetch('https://api.msg91.com/api/v5/widget/verifyOtp', {
+    method: 'POST',
+    headers: {
+      authkey: msg91AuthKey,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      widgetId: msg91WidgetId,
+      reqId,
+      otp,
+    }),
+  });
+
+  const text = await response.text();
+  const payload = parseJsonObject(text);
+
+  if (!response.ok) {
+    const errorMessage =
+      (typeof payload?.message === 'string' ? payload.message : undefined) ??
+      (typeof payload?.error === 'string' ? payload.error : undefined) ??
+      text.trim() ??
+      `MSG91 verifyOtp failed with status ${response.status}`;
+    throw new Error(errorMessage);
+  }
+
+  return payload;
+}
+
+async function verifyMsg91AccessToken(accessToken: string) {
+  if (!msg91OtpEnabled) {
+    throw new Error('MSG91 OTP is not configured');
+  }
+
+  const response = await fetch('https://control.msg91.com/api/v5/widget/verifyAccessToken', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      authkey: msg91AuthKey,
+      'access-token': accessToken,
+    }),
+  });
+
+  const text = await response.text();
+  const payload = parseJsonObject(text);
+
+  if (!response.ok) {
+    const errorMessage =
+      extractFirstString(payload, ['message', 'error', 'detail']) ??
+      text.trim() ??
+      `MSG91 verifyAccessToken failed with status ${response.status}`;
+    throw new Error(errorMessage);
+  }
+
+  return payload;
+}
 
 app.get('/', (_req, res) => {
   res.json({
@@ -69,8 +291,6 @@ app.get('/', (_req, res) => {
     endpoints: ['/health', '/catalog', '/customers', '/orders', '/production/batches', '/delivery/manifest'],
   });
 });
-
-type AuthRole = 'owner' | 'manager' | 'production' | 'delivery' | 'accounts' | 'support' | 'customer';
 
 type SessionUser = {
   id: string;
@@ -81,7 +301,8 @@ type SessionUser = {
 };
 
 type AuthRecord = SessionUser & {
-  password: string;
+  passwordHash: string;
+  password?: string;
   active?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -89,6 +310,12 @@ type AuthRecord = SessionUser & {
   phone?: string;
   defaultAddress?: string;
   deliveryZone?: string;
+};
+
+type LoginAttempt = {
+  failures: number;
+  windowStartedAt: number;
+  blockedUntil: number;
 };
 
 type Session = {
@@ -101,7 +328,9 @@ type Session = {
 type OtpChallenge = {
   id: string;
   phone: string;
-  code: string;
+  code: string | null;
+  provider: 'local' | 'msg91';
+  attemptCount: number;
   createdAt: string;
   expiresAt: string;
 };
@@ -451,6 +680,20 @@ type CustomerRequest = {
   decidedAt: string | null;
 };
 
+type CustomerApplicationRecord = {
+  id: string;
+  businessName: string;
+  city: string;
+  zone: string;
+  contactPerson: string;
+  gstin: string;
+  requestedCredit: string;
+  documents: string[];
+  submittedAt: string;
+  status: 'submitted' | 'under_review' | 'approved' | 'rejected' | 'needs_more_info';
+  note: string;
+};
+
 type SavedAddress = {
   id: string;
   customerId: string;
@@ -476,7 +719,7 @@ type ReportExport = {
 type DocumentRecord = {
   id: string;
   customerId: string;
-  documentType: 'gst' | 'credit' | 'proof' | 'invoice' | 'other';
+  documentType: 'gst' | 'fssai' | 'cheque' | 'credit' | 'proof' | 'invoice' | 'other';
   status: 'draft' | 'uploaded' | 'verified' | 'archived';
   title: string;
   fileName: string;
@@ -560,6 +803,7 @@ type ApiStateSnapshot = {
   customerMetrics: CustomerMetric[];
   branchMetrics: BranchMetric[];
   customerRequests: CustomerRequest[];
+  customerApplications: CustomerApplicationRecord[];
   savedAddresses: SavedAddress[];
   reportExports: ReportExport[];
   documents: DocumentRecord[];
@@ -569,20 +813,21 @@ type ApiStateSnapshot = {
 
 const authUsers: AuthRecord[] = allowDemoAccounts
   ? [
-      { id: 'user_owner', username: 'owner', displayName: 'Owner', role: 'owner', password: 'owner123' },
-      { id: 'user_manager', username: 'manager', displayName: 'Manager', role: 'manager', password: 'manager123' },
+      { id: 'user_owner', username: 'owner', displayName: 'Owner', role: 'owner', passwordHash: hashPassword('owner123') },
+      { id: 'user_manager', username: 'manager', displayName: 'Manager', role: 'manager', passwordHash: hashPassword('manager123') },
       {
         id: 'user_production',
         username: 'production',
         displayName: 'Production Lead',
         role: 'production',
-        password: 'production123',
+        passwordHash: hashPassword('production123'),
       },
-      { id: 'user_delivery', username: 'delivery', displayName: 'Delivery Lead', role: 'delivery', password: 'delivery123' },
-      { id: 'user_accounts', username: 'accounts', displayName: 'Accounts Lead', role: 'accounts', password: 'accounts123' },
-      { id: 'user_support', username: 'support', displayName: 'Support Lead', role: 'support', password: 'support123' },
+      { id: 'user_delivery', username: 'delivery', displayName: 'Delivery Lead', role: 'delivery', passwordHash: hashPassword('delivery123') },
+      { id: 'user_accounts', username: 'accounts', displayName: 'Accounts Lead', role: 'accounts', passwordHash: hashPassword('accounts123') },
+      { id: 'user_support', username: 'support', displayName: 'Support Lead', role: 'support', passwordHash: hashPassword('support123') },
     ]
   : [];
+const dummyPasswordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
 
 let customerAuthRecords: AuthRecord[] = [
   {
@@ -591,7 +836,7 @@ let customerAuthRecords: AuthRecord[] = [
     loginId: '9000000001',
     displayName: 'Cafe Nook',
     role: 'customer',
-    password: 'nook123',
+    passwordHash: hashPassword('nook123'),
     customerId: 'cust_cafe_nook',
     active: true,
     createdAt: new Date().toISOString(),
@@ -606,7 +851,7 @@ let customerAuthRecords: AuthRecord[] = [
     loginId: '9000000002',
     displayName: 'Hotel Lotus',
     role: 'customer',
-    password: 'lotus123',
+    passwordHash: hashPassword('lotus123'),
     customerId: 'cust_hotel_lotus',
     active: true,
     createdAt: new Date().toISOString(),
@@ -639,6 +884,19 @@ database.exec(`
     user_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS auth_principals (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    customer_id TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    profile_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS notification_templates (
@@ -737,6 +995,8 @@ recordMigration('database-initialized');
 const sessions = new Map<string, Session>();
 const otpChallenges = new Map<string, OtpChallenge>();
 const otpVerifications = new Map<string, OtpVerification>();
+const loginAttempts = new Map<string, LoginAttempt>();
+const otpRequestAttempts = new Map<string, LoginAttempt>();
 let auditEvents: AuditEvent[] = [];
 let approvals: ApprovalRequest[] = [];
 let branchApprovalRules = [
@@ -1085,6 +1345,34 @@ let riskSnapshots: RiskSnapshot[] = [];
 let customerMetrics: CustomerMetric[] = [];
 let branchMetrics: BranchMetric[] = [];
 let customerRequests: CustomerRequest[] = [];
+let customerApplications: CustomerApplicationRecord[] = [
+  {
+    id: 'app_2001',
+    businessName: 'Seaside Cafe',
+    city: 'Kochi',
+    zone: 'Central',
+    contactPerson: 'Anjali K.',
+    gstin: '32AAJCS1132Q1Z5',
+    requestedCredit: '₹50,000 / 15 days',
+    documents: ['GST certificate', 'FSSAI license', 'Cancelled cheque'],
+    submittedAt: 'Today, 9:15 AM',
+    status: 'submitted',
+    note: 'New cafe opening with breakfast focus.',
+  },
+  {
+    id: 'app_2002',
+    businessName: 'Palm Residency',
+    city: 'Ernakulam',
+    zone: 'North',
+    contactPerson: 'Rahul V.',
+    gstin: '32AAACP7741R1Z4',
+    requestedCredit: '₹1,00,000 / 30 days',
+    documents: ['GST certificate', 'FSSAI license'],
+    submittedAt: 'Today, 10:05 AM',
+    status: 'needs_more_info',
+    note: 'Missing cancelled cheque for credit review.',
+  },
+];
 let savedAddresses: SavedAddress[] = [
   {
     id: 'addr_cafe_nook_main',
@@ -1163,37 +1451,70 @@ let erpSyncStatus: ErpSyncStatus = {
   failedCount: 0,
 };
 await loadState();
+const migratedLegacyPasswords = [...authUsers, ...customerAuthRecords].some((record) => Boolean(record.password));
+for (const record of [...authUsers, ...customerAuthRecords]) {
+  migrateLegacyPassword(record);
+}
+if (migratedLegacyPasswords) {
+  recordMigration('legacy-passwords-to-scrypt');
+}
+loadOrMigrateAuthPrincipals();
+if (!vasyConfigured) {
+  erpSyncStatus.state = 'down';
+  erpSyncStatus.lastSuccessAt = null;
+}
 rebuildOperationalState();
 await persistState();
 
-const rolePermissions: Record<
-  AuthRole,
-  {
-    canEditOrders: boolean;
-    canCaptureReturns: boolean;
-    canSyncErp: boolean;
-  }
-> = {
-  owner: { canEditOrders: true, canCaptureReturns: true, canSyncErp: true },
-  manager: { canEditOrders: true, canCaptureReturns: true, canSyncErp: true },
-  production: { canEditOrders: false, canCaptureReturns: false, canSyncErp: false },
-  delivery: { canEditOrders: false, canCaptureReturns: true, canSyncErp: false },
-  accounts: { canEditOrders: true, canCaptureReturns: false, canSyncErp: false },
-  support: { canEditOrders: false, canCaptureReturns: false, canSyncErp: false },
-  customer: { canEditOrders: false, canCaptureReturns: false, canSyncErp: false },
-};
-
 function findAuthRecord(username: string, password: string) {
-  const staffRecord = authUsers.find(
-    (entry) => entry.username === username && entry.password === password && entry.active !== false,
-  );
-  if (staffRecord) {
-    return staffRecord;
-  }
+  const normalizedUsername = username.trim().toLowerCase();
+  const record =
+    authUsers.find((entry) => entry.username.toLowerCase() === normalizedUsername) ??
+    customerAuthRecords.find((entry) => entry.loginId?.toLowerCase() === normalizedUsername);
+  const passwordMatches = verifyPassword(password, record?.passwordHash ?? dummyPasswordHash);
+  return record && passwordMatches && record.active !== false ? record : undefined;
+}
 
-  return customerAuthRecords.find(
-    (entry) => entry.loginId === username && entry.password === password && entry.active !== false,
-  );
+function loginAttemptKey(req: express.Request, username: string) {
+  return `${req.ip}:${username.trim().toLowerCase()}`;
+}
+
+function getBlockedSeconds(attempt: LoginAttempt | undefined) {
+  if (!attempt || attempt.blockedUntil <= Date.now()) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil((attempt.blockedUntil - Date.now()) / 1000));
+}
+
+function recordFailedLogin(key: string) {
+  const now = Date.now();
+  const existing = loginAttempts.get(key);
+  const attempt = !existing || now - existing.windowStartedAt > 15 * 60 * 1000
+    ? { failures: 0, windowStartedAt: now, blockedUntil: 0 }
+    : existing;
+  attempt.failures += 1;
+  if (attempt.failures >= 5) {
+    attempt.blockedUntil = now + 15 * 60 * 1000;
+  }
+  loginAttempts.set(key, attempt);
+  return getBlockedSeconds(attempt);
+}
+
+function consumeOtpRequest(key: string) {
+  const now = Date.now();
+  const existing = otpRequestAttempts.get(key);
+  const attempt = !existing || now - existing.windowStartedAt > 15 * 60 * 1000
+    ? { failures: 0, windowStartedAt: now, blockedUntil: 0 }
+    : existing;
+  if (attempt.blockedUntil > now) {
+    return getBlockedSeconds(attempt);
+  }
+  attempt.failures += 1;
+  if (attempt.failures > 5) {
+    attempt.blockedUntil = now + 15 * 60 * 1000;
+  }
+  otpRequestAttempts.set(key, attempt);
+  return getBlockedSeconds(attempt);
 }
 
 function toSessionUser(record: AuthRecord): SessionUser {
@@ -1207,7 +1528,7 @@ function toSessionUser(record: AuthRecord): SessionUser {
 }
 
 function issueSession(user: SessionUser) {
-  const token = crypto.randomUUID();
+  const token = generateSessionToken();
   const session: Session = {
     token,
     user,
@@ -1226,7 +1547,7 @@ function issueSession(user: SessionUser) {
         expires_at = excluded.expires_at
       `,
     )
-    .run(token, JSON.stringify(session.user), session.createdAt, session.expiresAt);
+    .run(hashSessionToken(token), JSON.stringify(session.user), session.createdAt, session.expiresAt);
   return session;
 }
 
@@ -1235,8 +1556,10 @@ app.get('/health', (_req, res) => {
     ok: true,
     service: 'aeden-bakes-api',
     persistence: 'sqlite',
-    databasePath,
-    sessions: sessions.size,
+    environment: process.env.NODE_ENV ?? 'development',
+    otpProvider: msg91OtpEnabled ? 'msg91' : 'local',
+    erpProvider: vasyConfigured ? 'vasy_configured' : 'not_configured',
+    onboardingMode: allowPrototypeOnboarding ? 'prototype_explicitly_enabled' : 'disabled_pending_recovery',
   });
 });
 
@@ -1248,11 +1571,27 @@ app.post('/auth/login', (req, res) => {
     return;
   }
 
+  const attemptKey = loginAttemptKey(req, username);
+  const blockedSeconds = getBlockedSeconds(loginAttempts.get(attemptKey));
+  if (blockedSeconds > 0) {
+    res.setHeader('retry-after', String(blockedSeconds));
+    res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+    return;
+  }
+
   const record = findAuthRecord(username, password);
   if (!record) {
+    const retryAfter = recordFailedLogin(attemptKey);
+    if (retryAfter > 0) {
+      res.setHeader('retry-after', String(retryAfter));
+      res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+      return;
+    }
     res.status(401).json({ error: 'Invalid username or password' });
     return;
   }
+
+  loginAttempts.delete(attemptKey);
 
   const session = issueSession(toSessionUser(record));
   persistStateSoon();
@@ -1273,7 +1612,7 @@ app.post('/auth/logout', authenticate, (req, res) => {
   const token = getToken(req);
   if (token) {
     sessions.delete(token);
-    database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
+    database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(hashSessionToken(token));
     persistStateSoon();
   }
 
@@ -1290,28 +1629,62 @@ app.get('/auth/me', authenticate, (req, res) => {
       role: session.user.role,
       customerId: session.user.customerId,
     },
-    permissions: rolePermissions[session.user.role],
+    permissions: ROLE_PERMISSIONS[session.user.role],
     expiresAt: session.expiresAt,
   });
 });
 
-app.post('/auth/otp/request', (req, res) => {
+app.post('/auth/otp/request', async (req, res) => {
   const { phone } = req.body as { phone?: string };
-  const normalizedPhone = phone?.replace(/\D/g, '').trim();
+  const normalizedPhone = normalizePhoneNumber(phone);
 
   if (!normalizedPhone || normalizedPhone.length < 10) {
     res.status(400).json({ error: 'phone is required' });
     return;
   }
 
+  const retryAfter = consumeOtpRequest(`${req.ip}:${normalizedPhone}`);
+  if (retryAfter > 0) {
+    res.setHeader('retry-after', String(retryAfter));
+    res.status(429).json({ error: 'Too many OTP requests. Try again later.' });
+    return;
+  }
+
+  const now = new Date();
+
+  if (msg91OtpEnabled) {
+    try {
+      const result = await sendMsg91Otp(normalizedPhone);
+      otpChallenges.set(result.reqId, {
+        id: result.reqId,
+        phone: normalizedPhone,
+        code: null,
+        provider: 'msg91',
+        attemptCount: 0,
+        createdAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 1000 * 60 * 15).toISOString(),
+      });
+
+      res.json({
+        challengeId: result.reqId,
+        expiresInSeconds: 900,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'MSG91 OTP request failed';
+      res.status(502).json({ error: message });
+    }
+    return;
+  }
+
   const challengeId = crypto.randomUUID();
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  const now = new Date();
 
   otpChallenges.set(challengeId, {
     id: challengeId,
     phone: normalizedPhone,
     code,
+    provider: 'local',
+    attemptCount: 0,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 1000 * 60 * 5).toISOString(),
   });
@@ -1323,13 +1696,13 @@ app.post('/auth/otp/request', (req, res) => {
   });
 });
 
-app.post('/auth/otp/verify', (req, res) => {
+app.post('/auth/otp/verify', async (req, res) => {
   const { challengeId, phone, code } = req.body as {
     challengeId?: string;
     phone?: string;
     code?: string;
   };
-  const normalizedPhone = phone?.replace(/\D/g, '').trim();
+  const normalizedPhone = normalizePhoneNumber(phone);
   const normalizedCode = code?.trim();
 
   if (!challengeId || !normalizedPhone || !normalizedCode) {
@@ -1351,6 +1724,41 @@ app.post('/auth/otp/verify', (req, res) => {
   if (new Date(challenge.expiresAt).getTime() <= Date.now()) {
     otpChallenges.delete(challengeId);
     res.status(410).json({ error: 'OTP challenge expired' });
+    return;
+  }
+
+  challenge.attemptCount += 1;
+  if (challenge.attemptCount > 5) {
+    otpChallenges.delete(challengeId);
+    res.status(429).json({ error: 'Too many OTP verification attempts. Request a new code.' });
+    return;
+  }
+
+  if (challenge.provider === 'msg91') {
+    try {
+      const payload = await verifyMsg91Otp(challenge.id, normalizedCode);
+      otpChallenges.delete(challengeId);
+
+      const token = `otp_${crypto.randomUUID()}`;
+      otpVerifications.set(token, {
+        token,
+        phone: normalizedPhone,
+        verifiedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 1000 * 60 * 10).toISOString(),
+      });
+
+      res.json({
+        verified: true,
+        otpToken: token,
+        phone: normalizedPhone,
+        expiresInSeconds: 600,
+        provider: 'msg91',
+        ...(payload ? { providerResponse: payload } : {}),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'OTP verification failed';
+      res.status(401).json({ error: message });
+    }
     return;
   }
 
@@ -1377,32 +1785,116 @@ app.post('/auth/otp/verify', (req, res) => {
   });
 });
 
-app.post('/customer/onboard', (req, res) => {
-  const input = req.body as Partial<CustomerOnboardingRequest> & { otpToken?: string };
+app.post('/customer/onboard', async (req, res) => {
+  if (!allowPrototypeOnboarding) {
+    res.status(503).json({
+      error:
+        'Customer onboarding activation is temporarily disabled until pending approval and real document storage are implemented.',
+      code: 'ONBOARDING_RECOVERY_IN_PROGRESS',
+    });
+    return;
+  }
+
+  const input = req.body as Partial<CustomerOnboardingRequest> & {
+    otpToken?: string;
+    otpAccessToken?: string;
+  };
   const name = input.name?.trim();
   const deliveryZone = input.deliveryZone?.trim();
   const loginId = input.loginId?.trim();
   const password = input.password?.trim();
   const defaultAddress = input.defaultAddress?.trim();
   const otpToken = input.otpToken?.trim();
+  const otpAccessToken = input.otpAccessToken?.trim();
+  const gstVerified = input.gstVerified === true;
+  const submittedDocuments = input.documents ?? [];
   const otpVerification = otpToken ? otpVerifications.get(otpToken) : undefined;
   const otpActive =
     otpVerification &&
     otpVerification.phone === loginId?.replace(/\D/g, '') &&
     new Date(otpVerification.expiresAt).getTime() > Date.now();
+  let accessTokenVerified = false;
+  const requiredDocumentTypes: Array<CustomerOnboardingDocument['documentType']> = ['gst', 'fssai', 'cheque'];
+  const normalizedDocuments: Array<{
+    documentType: CustomerOnboardingDocument['documentType'];
+    title: string;
+    fileName: string;
+    verified: boolean;
+  }> = [];
+
+  for (const document of submittedDocuments) {
+    if (typeof document !== 'object' || document === null) {
+      continue;
+    }
+
+    const typedDocument = document as Partial<CustomerOnboardingDocument>;
+    const documentType = typedDocument.documentType;
+    const title = typedDocument.title?.trim();
+    const fileName = typedDocument.fileName?.trim();
+
+    if (!documentType || !requiredDocumentTypes.includes(documentType) || !title || !fileName) {
+      continue;
+    }
+
+    normalizedDocuments.push({
+      documentType,
+      title,
+      fileName,
+      verified: typedDocument.verified === true,
+    });
+  }
+  const hasRequiredDocuments =
+    normalizedDocuments.length >= requiredDocumentTypes.length &&
+    requiredDocumentTypes.every((type) =>
+      normalizedDocuments.some((document) => document.documentType === type && document.title && document.fileName),
+    );
 
   if (!name || !deliveryZone || !loginId || !defaultAddress) {
     res.status(400).json({ error: 'name, deliveryZone, loginId, and defaultAddress are required' });
     return;
   }
 
-  if (!password && !otpActive) {
-    res.status(400).json({ error: 'password or a valid otpToken is required' });
+  if (!password && !otpActive && !otpAccessToken) {
+    res.status(400).json({ error: 'password, otpToken, or otpAccessToken is required' });
     return;
+  }
+
+  if (otpAccessToken) {
+    try {
+      const verification = await verifyMsg91AccessToken(otpAccessToken);
+      const verifiedIdentifier = extractFirstString(verification, ['mobile', 'phone', 'identifier', 'email']);
+      const normalizedLoginId = loginId.replace(/\D/g, '');
+      if (verifiedIdentifier) {
+        const normalizedVerifiedIdentifier = verifiedIdentifier.replace(/\D/g, '');
+        const identifierMatches =
+          normalizedVerifiedIdentifier === normalizedLoginId || verifiedIdentifier === loginId || verifiedIdentifier === `+${normalizedLoginId}`;
+
+        if (!identifierMatches) {
+          res.status(400).json({ error: 'verified OTP token does not match the submitted loginId' });
+          return;
+        }
+      }
+
+      accessTokenVerified = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'OTP access token verification failed';
+      res.status(401).json({ error: message });
+      return;
+    }
   }
 
   if (password && password.length < 6) {
     res.status(400).json({ error: 'password must be at least 6 characters long' });
+    return;
+  }
+
+  if (!gstVerified) {
+    res.status(400).json({ error: 'GST verification is required before onboarding' });
+    return;
+  }
+
+  if (!hasRequiredDocuments) {
+    res.status(400).json({ error: 'GST certificate, FSSAI license, and cancelled cheque are required' });
     return;
   }
 
@@ -1443,7 +1935,7 @@ app.post('/customer/onboard', (req, res) => {
     loginId,
     displayName: name,
     role: 'customer',
-    password: effectivePassword,
+    passwordHash: hashPassword(effectivePassword),
     customerId: customer.id,
     active: true,
     createdAt: now,
@@ -1453,6 +1945,7 @@ app.post('/customer/onboard', (req, res) => {
     deliveryZone,
   };
   customerAuthRecords.unshift(authRecord);
+  persistAuthPrincipal(authRecord);
 
   const branchNow = new Date().toISOString();
   const primaryBranch: CustomerBranch = {
@@ -1480,6 +1973,23 @@ app.post('/customer/onboard', (req, res) => {
     updatedAt: branchNow,
   };
   customerUsers.unshift(accountUser);
+
+  for (const document of normalizedDocuments) {
+    const id = `doc_${crypto.randomUUID()}`;
+    documents.unshift({
+      id,
+      customerId: customer.id,
+      documentType: document.documentType,
+      status: document.verified ? 'verified' : 'uploaded',
+      title: document.title,
+      fileName: document.fileName,
+      mimeType: 'application/pdf',
+      downloadUrl: `/documents/${id}/download`,
+      tags: ['onboarding'],
+      createdAt: branchNow,
+      verifiedAt: document.verified ? branchNow : null,
+    });
+  }
 
   const session = issueSession(toSessionUser(authRecord));
   recordAudit({
@@ -1689,6 +2199,196 @@ app.get('/catalog', authenticate, (_req, res) => {
   res.json({ products, capacities, slots });
 });
 
+app.get('/admin/products', authenticate, requireAnyRole(['owner', 'manager']), (_req, res) => {
+  res.json({ products });
+});
+
+app.post('/admin/products', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const body = req.body as Partial<{
+    name: string;
+    category: string;
+    price: number;
+    capacityToday: number;
+    capacityTomorrow: number;
+    cutoff: string;
+    badge: string;
+    note: string;
+  }>;
+
+  if (!body.name?.trim() || !body.category?.trim() || !Number.isFinite(body.price)) {
+    res.status(400).json({ error: 'name, category, and price are required' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const product: Product = {
+    id: `prod_${crypto.randomUUID().slice(0, 8)}`,
+    name: body.name.trim(),
+    category: body.category.trim(),
+    unitPrice: Math.max(0, Number(body.price)),
+    defaultCutoffTime: toMilitaryTime(body.cutoff?.trim() || '6:00 PM'),
+    active: true,
+    available: true,
+    published: false,
+    price: Math.max(0, Number(body.price)),
+    capacityToday: Math.max(0, Number(body.capacityToday ?? 0)),
+    capacityTomorrow: Math.max(0, Number(body.capacityTomorrow ?? 0)),
+    cutoff: body.cutoff?.trim() || '6:00 PM',
+    badge: body.badge?.trim() || 'New',
+    note: body.note?.trim() || 'Created from the admin product master.',
+  };
+  products.unshift(product);
+  recordAudit({
+    kind: 'approval_queued',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Created product ${product.name}.`,
+    referenceId: product.id,
+  });
+  persistStateSoon();
+  res.status(201).json({ product, products, createdAt: now });
+});
+
+app.patch('/admin/products/:id', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const product = products.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!product) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+
+  const body = req.body as Partial<{
+    name: string;
+    category: string;
+    price: number;
+    capacityToday: number;
+    capacityTomorrow: number;
+    cutoff: string;
+    badge: string;
+    note: string;
+    active: boolean;
+    available: boolean;
+    published: boolean;
+  }>;
+
+  if (typeof body.name === 'string') {
+    product.name = body.name.trim() || product.name;
+  }
+  if (typeof body.category === 'string') {
+    product.category = body.category.trim() || product.category;
+  }
+  if (Number.isFinite(body.price)) {
+    product.unitPrice = Math.max(0, Number(body.price));
+    product.price = product.unitPrice;
+  }
+  if (Number.isFinite(body.capacityToday)) {
+    product.capacityToday = Math.max(0, Number(body.capacityToday));
+  }
+  if (Number.isFinite(body.capacityTomorrow)) {
+    product.capacityTomorrow = Math.max(0, Number(body.capacityTomorrow));
+  }
+  if (typeof body.cutoff === 'string') {
+    product.cutoff = body.cutoff.trim() || product.cutoff;
+    product.defaultCutoffTime = toMilitaryTime(product.cutoff ?? '6:00 PM');
+  }
+  if (typeof body.badge === 'string') {
+    product.badge = body.badge.trim() || product.badge;
+  }
+  if (typeof body.note === 'string') {
+    product.note = body.note.trim() || product.note;
+  }
+  if (typeof body.active === 'boolean') {
+    product.active = body.active;
+    product.available = body.active;
+  }
+  if (typeof body.available === 'boolean') {
+    product.available = body.available;
+    product.active = body.available;
+  }
+  if (typeof body.published === 'boolean') {
+    product.published = body.published;
+  }
+
+  recordAudit({
+    kind: 'order_adjusted',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Updated product ${product.name}.`,
+    referenceId: product.id,
+  });
+  persistStateSoon();
+  res.json({ product, products });
+});
+
+app.post('/admin/products/:id/toggle', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const product = products.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!product) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+
+  const available = req.body as { available?: boolean };
+  const nextAvailable = typeof available.available === 'boolean' ? available.available : !product.active;
+  product.active = nextAvailable;
+  product.available = nextAvailable;
+  recordAudit({
+    kind: 'order_adjusted',
+    actor: req.session?.user.username ?? 'system',
+    summary: `${product.name} availability set to ${nextAvailable ? 'on' : 'off'}.`,
+    referenceId: product.id,
+  });
+  persistStateSoon();
+  res.json({ product, products });
+});
+
+app.post('/admin/products/:id/publish', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const product = products.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!product) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+
+  const published = req.body as { published?: boolean };
+  product.published = typeof published.published === 'boolean' ? published.published : !product.published;
+  recordAudit({
+    kind: 'order_adjusted',
+    actor: req.session?.user.username ?? 'system',
+    summary: `${product.name} publish state set to ${product.published ? 'published' : 'hidden'}.`,
+    referenceId: product.id,
+  });
+  persistStateSoon();
+  res.json({ product, products });
+});
+
+app.get('/admin/applications', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
+  res.json({ applications: customerApplications });
+});
+
+app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const application = customerApplications.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!application) {
+    res.status(404).json({ error: 'Application not found' });
+    return;
+  }
+
+  const body = req.body as { decision?: 'approve' | 'reject' | 'request_more_info' };
+  const decision = body.decision ?? 'approve';
+  application.status =
+    decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : 'needs_more_info';
+  application.note =
+    decision === 'approve'
+      ? `${application.businessName} approved by admin review.`
+      : decision === 'reject'
+        ? `${application.businessName} rejected by admin review.`
+        : `${application.businessName} needs more information before approval.`;
+
+  recordAudit({
+    kind: decision === 'approve' ? 'approval_approved' : 'approval_rejected',
+    actor: req.session?.user.username ?? 'system',
+    summary: `${application.businessName} application ${application.status}.`,
+    referenceId: application.id,
+  });
+  persistStateSoon();
+  res.json({ application, applications: customerApplications });
+});
+
 app.get('/customers', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
   res.json({ customers });
 });
@@ -1870,6 +2570,11 @@ app.post('/branches/:branchId/serviceability/check', authenticate, requireAnyRol
   const branchId = readRouteParam(req.params.branchId);
   const branch = customerBranches.find((entry) => entry.id === branchId);
   if (!branch) {
+    res.status(404).json({ error: 'Branch not found' });
+    return;
+  }
+
+  if (req.session?.user && !canAccessCustomerResource(req.session.user, branch.customerId)) {
     res.status(404).json({ error: 'Branch not found' });
     return;
   }
@@ -2570,7 +3275,7 @@ app.post(
     }
 
     const customerId = req.session?.user.customerId;
-    if (req.session?.user.role === 'customer' && standingOrder.customerId !== customerId) {
+    if (req.session?.user && !canAccessCustomerResource(req.session.user, standingOrder.customerId)) {
       res.status(403).json({ error: 'Standing order does not belong to this customer session' });
       return;
     }
@@ -3376,6 +4081,11 @@ app.get('/documents/:id/download', authenticate, requireAnyRole(['owner', 'manag
   }
 
   const customerId = document?.customerId ?? invoice?.customerId ?? req.session?.user.customerId ?? '';
+  if (req.session?.user && !canAccessCustomerResource(req.session.user, customerId)) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
   documentAccessLogs.unshift({
     id: `doclog_${crypto.randomUUID()}`,
     documentId: id,
@@ -3451,12 +4161,12 @@ app.get('/storage/status', (_req, res) => {
   );
 
   res.json({
-    mode: r2Configured ? 'cloud' : 'demo',
+    mode: r2Configured ? 'cloud_configured' : 'metadata_only',
     r2Configured,
     uploadStorageEnabled: r2Configured,
     note: r2Configured
-      ? 'Cloud object storage is ready.'
-      : 'Cloud object storage is not configured yet, so uploads remain in demo mode.',
+      ? 'Cloud object storage credentials are configured; upload verification is still required.'
+      : 'Files are not uploaded. The current document flow stores metadata only.',
   });
 });
 
@@ -3967,64 +4677,33 @@ app.post('/admin/orders/:id/returns', authenticate, requirePermission('canCaptur
   res.json({ order, auditEvents, erpSyncStatus });
 });
 
-app.post('/erp/sync/trigger', authenticate, requirePermission('canSyncErp'), (req, res) => {
-  const { actor = 'system' } = req.body as { actor?: string };
-  const now = new Date().toISOString();
+app.post('/erp/sync/trigger', authenticate, requirePermission('canSyncErp'), (_req, res) => {
+  if (!vasyConfigured) {
+    erpSyncStatus.state = 'down';
+    erpSyncStatus.failedCount += 1;
+    erpSyncStatus.lastAttemptAt = new Date().toISOString();
+    persistStateSoon();
+    res.status(503).json({ error: 'Vasy ERP is not configured. No sync was attempted.', erpSyncStatus });
+    return;
+  }
 
-  erpSyncStatus.lastAttemptAt = now;
-  erpSyncStatus.pendingCount = Math.max(0, erpSyncStatus.pendingCount - 1);
-  erpSyncStatus.failedCount = 0;
-  erpSyncStatus.state = 'healthy';
-  recordAudit({
-    kind: 'erp_sync_triggered',
-    actor,
-    summary: 'Triggered a Vasy ERP sync run.',
-    referenceId: 'vasy',
+  res.status(501).json({
+    error: 'Vasy credentials are configured, but the production connector has not been implemented.',
+    erpSyncStatus: { ...erpSyncStatus, state: 'degraded' },
   });
-  recordAudit({
-    kind: 'erp_sync_completed',
-    actor,
-    summary: 'Vasy ERP sync completed successfully.',
-    referenceId: 'vasy',
-  });
-  erpSyncStatus.lastSuccessAt = now;
-  persistStateSoon();
-
-  res.json({ erpSyncStatus, auditEvents });
 });
 
 app.get('/erp/vasy/contract', authenticate, requirePermission('canSyncErp'), (_req, res) => {
   res.json(buildVasyContractPreview());
 });
 
-app.post('/erp/vasy/push', authenticate, requirePermission('canSyncErp'), (req, res) => {
-  const { entries } = req.body as {
-    entries?: Array<{
-      orderId?: string;
-      status?: string;
-    }>;
-  };
+app.post('/erp/vasy/push', authenticate, requirePermission('canSyncErp'), (_req, res) => {
+  if (!vasyConfigured) {
+    res.status(503).json({ error: 'Vasy ERP is not configured. No payload was sent.' });
+    return;
+  }
 
-  const accepted = entries?.filter((entry) => typeof entry.orderId === 'string' && typeof entry.status === 'string').length ?? 0;
-  const rejected = Math.max(0, (entries?.length ?? 0) - accepted);
-
-  const result: VasyErpPushResult = {
-    provider: 'vasy',
-    accepted,
-    rejected,
-    message: accepted > 0 ? 'Vasy payload accepted.' : 'No valid payload rows were provided.',
-    receivedAt: new Date().toISOString(),
-  };
-
-  recordAudit({
-    kind: 'erp_sync_triggered',
-    actor: 'system',
-    summary: `Vasy push received with ${accepted} accepted and ${rejected} rejected rows.`,
-    referenceId: 'vasy',
-  });
-  persistStateSoon();
-
-  res.json(result);
+  res.status(501).json({ error: 'The production Vasy push adapter has not been implemented.' });
 });
 
 const port = Number(process.env.PORT ?? 4000);
@@ -4111,7 +4790,12 @@ function enqueueNotification(_input: {
   const template = getNotificationTemplate(input.templateCode);
   const preference = getNotificationPreference(input.customerId);
   const selectedChannel = input.channel ?? template.channelPriority.find((candidate) => channelAvailable(candidate, preference)) ?? 'in_app';
-  const resolvedStatus: NotificationJob['status'] = channelAvailable(selectedChannel, preference) ? 'delivered' : 'failed';
+  const channelEnabled = channelAvailable(selectedChannel, preference);
+  const resolvedStatus: NotificationJob['status'] = !channelEnabled
+    ? 'failed'
+    : selectedChannel === 'in_app'
+      ? 'delivered'
+      : 'queued';
   const now = new Date().toISOString();
   const job: NotificationJob = {
     id: `ntf_${crypto.randomUUID()}`,
@@ -4123,14 +4807,14 @@ function enqueueNotification(_input: {
     subject: input.subject,
     body: input.body ?? template.body,
     createdAt: now,
-    sentAt: resolvedStatus === 'failed' ? null : now,
+    sentAt: resolvedStatus === 'delivered' ? now : null,
     provider: gatewayForChannel(selectedChannel),
   };
   const delivery: NotificationDelivery = {
     id: `ntfd_${crypto.randomUUID()}`,
     jobId: job.id,
     recipient: input.recipient,
-    providerMessageId: resolvedStatus === 'failed' ? null : `msg_${crypto.randomUUID().slice(0, 8)}`,
+    providerMessageId: null,
     status: resolvedStatus,
     attemptNo: 1,
     createdAt: now,
@@ -5121,6 +5805,36 @@ function parseClockToMinutes(value: string) {
   return hours * 60 + minutes;
 }
 
+function toMilitaryTime(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '18:00';
+  }
+
+  const match = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (!match) {
+    return trimmed;
+  }
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2] ?? '00');
+  const suffix = match[3]?.toUpperCase();
+
+  if (!suffix) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  }
+
+  if (suffix === 'AM') {
+    if (hours === 12) {
+      hours = 0;
+    }
+  } else if (hours !== 12) {
+    hours += 12;
+  }
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
 let persistTimer: NodeJS.Timeout | null = null;
 
 function persistStateSoon() {
@@ -5214,6 +5928,7 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
       updatedAt: metric.updatedAt ?? metric.createdAt,
     })),
     customerRequests: parsed.customerRequests ?? customerRequests,
+    customerApplications: parsed.customerApplications ?? customerApplications,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
       ...report,
@@ -5252,12 +5967,101 @@ function recordMigration(migrationName: string, source = 'sqlite') {
     .run(migrationName, source, new Date().toISOString());
 }
 
+function persistAuthPrincipal(record: AuthRecord) {
+  const now = new Date().toISOString();
+  const profile = {
+    loginId: record.loginId,
+    phone: record.phone,
+    defaultAddress: record.defaultAddress,
+    deliveryZone: record.deliveryZone,
+  };
+  database
+    .prepare(
+      `
+      INSERT INTO auth_principals (
+        id, username, display_name, role, password_hash, customer_id, active, profile_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        username = excluded.username,
+        display_name = excluded.display_name,
+        role = excluded.role,
+        password_hash = excluded.password_hash,
+        customer_id = excluded.customer_id,
+        active = excluded.active,
+        profile_json = excluded.profile_json,
+        updated_at = excluded.updated_at
+      `,
+    )
+    .run(
+      record.id,
+      record.username,
+      record.displayName,
+      record.role,
+      record.passwordHash,
+      record.customerId ?? null,
+      record.active === false ? 0 : 1,
+      JSON.stringify(profile),
+      record.createdAt ?? now,
+      record.updatedAt ?? now,
+    );
+}
+
+function loadOrMigrateAuthPrincipals() {
+  const rows = database.prepare('SELECT * FROM auth_principals ORDER BY created_at').all() as Array<{
+    id: string;
+    username: string;
+    display_name: string;
+    role: AuthRole;
+    password_hash: string;
+    customer_id: string | null;
+    active: number;
+    profile_json: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+
+  if (rows.length === 0) {
+    for (const record of [...authUsers, ...customerAuthRecords]) {
+      persistAuthPrincipal(record);
+    }
+    recordMigration('auth-principals-normalized');
+    return;
+  }
+
+  const records = rows.map((row): AuthRecord => {
+    let profile: Record<string, unknown> = {};
+    try {
+      profile = JSON.parse(row.profile_json) as Record<string, unknown>;
+    } catch {
+      profile = {};
+    }
+    return {
+      id: row.id,
+      username: row.username,
+      loginId: typeof profile.loginId === 'string' ? profile.loginId : row.username,
+      displayName: row.display_name,
+      role: row.role,
+      passwordHash: row.password_hash,
+      customerId: row.customer_id ?? undefined,
+      active: row.active === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      phone: typeof profile.phone === 'string' ? profile.phone : undefined,
+      defaultAddress: typeof profile.defaultAddress === 'string' ? profile.defaultAddress : undefined,
+      deliveryZone: typeof profile.deliveryZone === 'string' ? profile.deliveryZone : undefined,
+    };
+  });
+
+  authUsers.splice(0, authUsers.length, ...records.filter((record) => record.role !== 'customer' && allowDemoAccounts));
+  customerAuthRecords.splice(0, customerAuthRecords.length, ...records.filter((record) => record.role === 'customer'));
+}
+
 async function persistState() {
   const snapshot: ApiStateSnapshot = {
     customers,
     customerBranches,
     customerUsers,
-    customerAuthRecords,
+    customerAuthRecords: [],
     customerNotes,
     supportCaseMessages,
     supportCases,
@@ -5278,7 +6082,7 @@ async function persistState() {
     productionBatches,
     auditEvents,
     erpSyncStatus,
-    sessions: [...sessions.values()],
+    sessions: [],
     approvals,
     deliveryEventIds: [...processedDeliveryEventIds],
     deliveryManifests,
@@ -5306,6 +6110,7 @@ async function persistState() {
     customerMetrics,
     branchMetrics,
     customerRequests,
+    customerApplications,
     savedAddresses,
     reportExports,
     documents,
@@ -5334,7 +6139,7 @@ async function persistState() {
     `,
   );
   for (const session of sessions.values()) {
-    insertSession.run(session.token, JSON.stringify(session.user), session.createdAt, session.expiresAt);
+    insertSession.run(hashSessionToken(session.token), JSON.stringify(session.user), session.createdAt, session.expiresAt);
   }
 }
 
@@ -5417,6 +6222,7 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   customerMetrics.splice(0, customerMetrics.length, ...snapshot.customerMetrics);
   branchMetrics.splice(0, branchMetrics.length, ...snapshot.branchMetrics);
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
+  customerApplications.splice(0, customerApplications.length, ...snapshot.customerApplications);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
   documents.splice(0, documents.length, ...snapshot.documents);
@@ -5435,34 +6241,8 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   erpSyncStatus.failedCount = snapshot.erpSyncStatus.failedCount;
 
   sessions.clear();
-  const storedSessions = database.prepare('SELECT token, user_json, created_at, expires_at FROM auth_sessions').all() as Array<{
-    token: string;
-    user_json: string;
-    created_at: string;
-    expires_at: string;
-  }>;
-
-  for (const sessionRow of storedSessions) {
-    if (new Date(sessionRow.expires_at).getTime() <= Date.now()) {
-      database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(sessionRow.token);
-      continue;
-    }
-
-    sessions.set(sessionRow.token, {
-      token: sessionRow.token,
-      user: JSON.parse(sessionRow.user_json) as SessionUser,
-      createdAt: sessionRow.created_at,
-      expiresAt: sessionRow.expires_at,
-    });
-  }
-
-  if (sessions.size === 0) {
-    for (const session of snapshot.sessions) {
-      if (new Date(session.expiresAt).getTime() > Date.now()) {
-        sessions.set(session.token, session);
-      }
-    }
-  }
+  // Only token hashes are stored at rest, so sessions intentionally expire on process restart.
+  database.prepare('DELETE FROM auth_sessions').run();
 }
 
 function getToken(req: express.Request) {
@@ -5490,6 +6270,7 @@ function authenticate(req: express.Request, res: express.Response, next: express
 
   if (new Date(session.expiresAt).getTime() <= Date.now()) {
     sessions.delete(token);
+    database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(hashSessionToken(token));
     res.status(401).json({ error: 'Session expired' });
     return;
   }
@@ -5506,7 +6287,7 @@ function requireAnyRole(roles: AuthRole[]) {
       return;
     }
 
-    if (!roles.includes(session.user.role)) {
+    if (!hasAnyRole(session.user, roles)) {
       res.status(403).json({ error: 'Insufficient role access' });
       return;
     }
@@ -5515,7 +6296,7 @@ function requireAnyRole(roles: AuthRole[]) {
   };
 }
 
-function requirePermission(permission: 'canEditOrders' | 'canCaptureReturns' | 'canSyncErp') {
+function requirePermission(permission: AuthPermission) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const session = req.session;
     if (!session) {
@@ -5523,7 +6304,7 @@ function requirePermission(permission: 'canEditOrders' | 'canCaptureReturns' | '
       return;
     }
 
-    if (!rolePermissions[session.user.role][permission]) {
+    if (!hasPermission(session.user, permission)) {
       res.status(403).json({ error: 'Insufficient permission' });
       return;
     }

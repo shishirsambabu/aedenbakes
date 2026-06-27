@@ -1,0 +1,75 @@
+name: Quality Gate
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: services/api/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+
+  web:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app:
+          - path: .
+            command: npm run build
+          - path: apps/web/super-admin
+            command: npm run lint && npm run build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.app.path }}/package-lock.json
+      - working-directory: ${{ matrix.app.path }}
+        run: npm ci
+      - working-directory: ${{ matrix.app.path }}
+        run: ${{ matrix.app.command }}
+      - working-directory: ${{ matrix.app.path }}
+        run: npm audit --omit=dev --audit-level=high
+
+  flutter:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [customer, production, delivery]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - working-directory: apps/mobile/${{ matrix.app }}
+        run: flutter pub get
+      - working-directory: apps/mobile/${{ matrix.app }}
+        run: flutter analyze
+      - working-directory: apps/mobile/${{ matrix.app }}
+        run: flutter test
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2

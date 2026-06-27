@@ -124,6 +124,14 @@ export interface Product {
   unitPrice: number;
   defaultCutoffTime: string;
   active: boolean;
+  available?: boolean;
+  published?: boolean;
+  price?: number;
+  capacityToday?: number;
+  capacityTomorrow?: number;
+  cutoff?: string;
+  badge?: string;
+  note?: string;
 }
 
 export interface ProductDayCapacity {
@@ -426,7 +434,7 @@ export interface StandingOrderChange {
 export interface CustomerDocument {
   id: string;
   customerId: string;
-  documentType: 'gst' | 'credit' | 'proof' | 'invoice' | 'other';
+  documentType: 'gst' | 'fssai' | 'cheque' | 'credit' | 'proof' | 'invoice' | 'other';
   status: 'draft' | 'uploaded' | 'verified' | 'archived';
   title: string;
   fileName: string;
@@ -486,6 +494,15 @@ export interface CustomerOnboardingRequest {
   defaultAddress: string;
   tier?: string;
   creditLimit?: number;
+  gstVerified?: boolean;
+  documents?: CustomerOnboardingDocument[];
+}
+
+export interface CustomerOnboardingDocument {
+  documentType: 'gst' | 'fssai' | 'cheque';
+  title: string;
+  fileName: string;
+  verified: boolean;
 }
 
 export interface CustomerOrderLineInput {

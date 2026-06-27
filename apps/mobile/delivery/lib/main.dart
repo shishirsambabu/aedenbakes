@@ -138,6 +138,8 @@ class _DeliveryShellState extends State<DeliveryShell> {
       if (mounted) {
         setState(() {
           _error = error.toString();
+          _manifestStatus = 'offline';
+          _manifestNote = 'Offline cache loaded. API unavailable.';
         });
       }
     } finally {
@@ -464,21 +466,6 @@ class _DeliveryShellState extends State<DeliveryShell> {
       );
     }
 
-    if (_error != null) {
-      return Scaffold(
-        backgroundColor: AedenPalette.cream,
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(
-              _error!,
-              textAlign: TextAlign.center,
-            ),
-          ),
-        ),
-      );
-    }
-
     final pages = [
       _OverviewSection(
         tasks: _tasks,
@@ -520,7 +507,33 @@ class _DeliveryShellState extends State<DeliveryShell> {
 
     return Scaffold(
       backgroundColor: AedenPalette.cream,
-      body: SafeArea(child: pages[_tabIndex]),
+      body: SafeArea(
+        child: Column(
+          children: [
+            if (_error != null)
+              Material(
+                color: AedenPalette.redSoft,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cloud_off_outlined, color: AedenPalette.red),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Offline or unable to verify the live manifest. Route data below may be stale.',
+                          style: TextStyle(fontWeight: FontWeight.w700, color: AedenPalette.red),
+                        ),
+                      ),
+                      TextButton(onPressed: _bootstrap, child: const Text('Retry')),
+                    ],
+                  ),
+                ),
+              ),
+            Expanded(child: pages[_tabIndex]),
+          ],
+        ),
+      ),
       bottomNavigationBar: NavigationBar(
         backgroundColor: Colors.white,
         selectedIndex: _tabIndex,
@@ -580,7 +593,7 @@ class _OverviewSection extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFFF8FAFC), AedenPalette.cream],
+          colors: [AedenPalette.goldSoft, AedenPalette.cream],
         ),
       ),
       child: ListView(
@@ -643,7 +656,7 @@ class _OverviewSection extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           const _SectionTitle(
-            title: 'Queue preview',
+            title: 'Queue',
             subtitle: 'The next tap is ready to go for each stop.',
           ),
           const SizedBox(height: 12),
@@ -744,7 +757,7 @@ class _QueueSection extends StatelessWidget {
             border: Border.all(color: AedenPalette.line),
             boxShadow: const [
               BoxShadow(
-                color: Color(0x120F172A),
+                color: Color(0x12000000),
                 blurRadius: 32,
                 offset: Offset(0, 14),
               ),
@@ -923,7 +936,7 @@ class _HeaderCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x1F0F172A),
+            color: Color(0x1F000000),
             blurRadius: 30,
             offset: Offset(0, 16),
           ),
@@ -950,7 +963,7 @@ class _HeaderCard extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(
                   subtitle,
-                  style: const TextStyle(color: Color(0xFFCBD5E1)),
+                  style: const TextStyle(color: AedenPalette.goldMuted),
                 ),
               ],
             ),
@@ -1055,7 +1068,7 @@ class _HeroCard extends StatelessWidget {
           const SizedBox(height: 8),
           const Text(
             'Route, proof of delivery, and exceptions stay visible in one place.',
-            style: TextStyle(color: Color(0xFFCBD5E1), height: 1.5),
+            style: TextStyle(color: AedenPalette.goldMuted, height: 1.5),
           ),
           const SizedBox(height: 14),
           Wrap(
@@ -1234,7 +1247,7 @@ class _QueuePreviewCard extends StatelessWidget {
         border: Border.all(color: AedenPalette.line),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x100F172A),
+            color: Color(0x10000000),
             blurRadius: 18,
             offset: Offset(0, 10),
           ),
@@ -1266,7 +1279,7 @@ class _QueueRow extends StatelessWidget {
       decoration: BoxDecoration(
         color: task.status == 'Exception'
             ? AedenPalette.redSoft
-            : const Color(0xFFF8FAFC),
+            : AedenPalette.goldSoft,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(color: AedenPalette.line),
       ),
@@ -1329,7 +1342,7 @@ class _MapCard extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF0F1F49), Color(0xFF102A5C)],
+          colors: [AedenPalette.espresso, AedenPalette.chestnut],
         ),
         borderRadius: BorderRadius.circular(28),
       ),
@@ -1338,8 +1351,8 @@ class _MapCard extends StatelessWidget {
         children: [
           const Text(
             'Route board',
-            style: TextStyle(
-              color: Color(0xFFCBD5E1),
+              style: TextStyle(
+              color: AedenPalette.goldMuted,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -1392,7 +1405,7 @@ class _RouteRow extends StatelessWidget {
               ),
             ),
           ),
-          Text(task.slot, style: const TextStyle(color: Color(0xFFCBD5E1))),
+          Text(task.slot, style: const TextStyle(color: AedenPalette.goldMuted)),
         ],
       ),
     );

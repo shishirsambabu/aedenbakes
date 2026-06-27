@@ -12,3 +12,11 @@ build/
 *.log
 **/*.sqlite
 **/*.db
+services/api/data/api-state.json
+services/api/data/cutover-rehearsal-report.json
+
+# Local credentials and generated audit artifacts
+**/.env
+**/.env.*
+!**/.env.example
+.codex*.png

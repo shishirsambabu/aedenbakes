@@ -273,10 +273,10 @@ class _ProductionHomeState extends State<ProductionHome> {
           decoration: const BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                AedenPalette.navyDeep,
-                AedenPalette.navy,
-                Color(0xFFF0E5D8),
-                Color(0xFFF4EBDD),
+              AedenPalette.espresso,
+              AedenPalette.chestnut,
+              AedenPalette.cream,
+              AedenPalette.ivory,
               ],
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
@@ -924,7 +924,7 @@ class _ProductionHeader extends StatelessWidget {
                 child: _MetricTile(
                   label: 'Stations',
                   value: snapshot.stationGroups.length.toString(),
-                  accentColor: const Color(0xFFD8E8F8),
+                  accentColor: const Color(0xFFF3DDBE),
                   dark: true,
                 ),
               ),
@@ -1342,7 +1342,7 @@ class _LifecycleRail extends StatelessWidget {
                 final backgroundColor = isCurrent
                     ? _blue
                     : isActive
-                    ? const Color(0xFFE7F0F9)
+                    ? const Color(0xFFF6E7D8)
                     : const Color(0xFFF3E8D9);
                 final foregroundColor = isCurrent ? Colors.white : _ink;
 
@@ -1536,7 +1536,7 @@ class _LineCard extends StatelessWidget {
               child: LinearProgressIndicator(
                 value: line.completionRatio,
                 minHeight: 8,
-                backgroundColor: const Color(0xFFF0E5D8),
+                backgroundColor: AedenPalette.goldSoft,
                 valueColor: AlwaysStoppedAnimation<Color>(tone.foreground),
               ),
             ),
@@ -2848,7 +2848,7 @@ _Tone _lineTone(_ProductionLine line) {
 
   if (line.productCategory.toLowerCase() == 'laminated') {
     return const _Tone(
-      background: Color(0xFFE1EEF8),
+      background: Color(0xFFF6E7D8),
       foreground: _blue,
       border: Color(0xFFBFD1E3),
     );
@@ -2872,7 +2872,7 @@ _Tone _stationTone(_StationSummary station) {
 
   if (station.name == 'Lamination') {
     return const _Tone(
-      background: Color(0xFFE1EEF8),
+      background: Color(0xFFF6E7D8),
       foreground: _blue,
       border: Color(0xFFBFD1E3),
     );
@@ -2895,7 +2895,7 @@ _Tone _slotTone(_SlotSummary slot) {
   }
 
   return const _Tone(
-    background: Color(0xFFE6EFF8),
+    background: Color(0xFFF6E7D8),
     foreground: _blue,
     border: Color(0xFFBFD1E3),
   );
@@ -2947,8 +2947,8 @@ class _SuccessTone {
   static const info = _SuccessTone._(
     background: Color(0xFFEFF5FB),
     foreground: _blue,
-    border: Color(0xFFC9D9EB),
-    iconBackground: Color(0xFFDCE9F5),
+    border: Color(0xFFF0D8A7),
+    iconBackground: Color(0xFFF7E7BF),
     icon: Icons.lock_outline,
   );
 }

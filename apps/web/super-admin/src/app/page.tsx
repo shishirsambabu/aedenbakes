@@ -68,6 +68,25 @@ type Product = {
   unitPrice: number;
   defaultCutoffTime: string;
   active: boolean;
+  available?: boolean;
+  published?: boolean;
+  price?: number;
+  capacityToday?: number;
+  capacityTomorrow?: number;
+  cutoff?: string;
+  badge?: string;
+  note?: string;
+};
+
+type ProductDraft = {
+  name: string;
+  category: string;
+  price: string;
+  capacityToday: string;
+  capacityTomorrow: string;
+  cutoff: string;
+  badge: string;
+  note: string;
 };
 
 type ProductDayCapacity = {
@@ -466,7 +485,7 @@ type NotificationPreference = {
 type DocumentRecord = {
   id: string;
   customerId: string;
-  documentType: 'gst' | 'credit' | 'proof' | 'invoice' | 'other';
+  documentType: 'gst' | 'fssai' | 'cheque' | 'credit' | 'proof' | 'invoice' | 'other';
   status: 'draft' | 'uploaded' | 'verified' | 'archived';
   title: string;
   fileName: string;
@@ -855,6 +874,16 @@ export default function Home() {
   const [invoiceCustomerId, setInvoiceCustomerId] = useState('cust_cafe_nook');
   const [invoiceNumber, setInvoiceNumber] = useState('INV-2402');
   const [invoiceAmount, setInvoiceAmount] = useState('12640');
+  const [productDraft, setProductDraft] = useState<ProductDraft>({
+    name: '',
+    category: 'Bread',
+    price: '',
+    capacityToday: '',
+    capacityTomorrow: '',
+    cutoff: '6:00 PM',
+    badge: 'New',
+    note: '',
+  });
   const [activeSection, setActiveSection] = useState<'overview' | 'customers' | 'production' | 'delivery' | 'operations'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -884,6 +913,7 @@ export default function Home() {
       const [
         customersRes,
         catalogRes,
+        adminProductsRes,
         ordersRes,
         operationsRes,
         supportRes,
@@ -904,6 +934,9 @@ export default function Home() {
           : Promise.resolve(null),
         sessionToken
           ? fetchWithTimeout(`${API_BASE_URL}/catalog`, { headers: authHeaders(sessionToken) })
+          : Promise.resolve(null),
+        sessionToken && role === 'owner'
+          ? fetchWithTimeout(`${API_BASE_URL}/admin/products`, { headers: authHeaders(sessionToken) })
           : Promise.resolve(null),
         sessionToken
           ? fetchWithTimeout(`${API_BASE_URL}/orders`, { headers: authHeaders(sessionToken) })
@@ -932,6 +965,7 @@ export default function Home() {
         catalogRes.json(),
         ordersRes.json(),
       ]);
+      const adminProductsJson = adminProductsRes && adminProductsRes.ok ? await adminProductsRes.json() : null;
 
       let auditEvents: AuditEvent[] = [];
       let approvals: ApprovalRequest[] = [];
@@ -1098,7 +1132,7 @@ export default function Home() {
 
       setAppState({
         customers: customersJson.customers ?? [],
-        products: catalogJson.products ?? [],
+        products: adminProductsJson?.products ?? catalogJson.products ?? [],
         capacities: catalogJson.capacities ?? [],
         slots: catalogJson.slots ?? [],
         orders: ordersJson.orders ?? [],
@@ -1525,12 +1559,12 @@ export default function Home() {
     }
   }
 
-  async function login() {
+  async function login(nextUsername = loginUsername, nextPassword = loginPassword) {
     setLoginError(null);
     const response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: loginUsername, password: loginPassword }),
+      body: JSON.stringify({ username: nextUsername, password: nextPassword }),
     });
 
     if (!response.ok) {
@@ -1828,8 +1862,57 @@ export default function Home() {
     );
   }
 
+  async function createProductMasterEntry() {
+    if (!token) return;
+
+    const payload = {
+      name: productDraft.name.trim(),
+      category: productDraft.category.trim(),
+      price: Number(productDraft.price) || 0,
+      capacityToday: Number(productDraft.capacityToday) || 0,
+      capacityTomorrow: Number(productDraft.capacityTomorrow) || 0,
+      cutoff: productDraft.cutoff.trim() || '6:00 PM',
+      badge: productDraft.badge.trim() || 'New',
+      note: productDraft.note.trim() || 'Created from the admin portal.',
+    };
+
+    if (!payload.name || !payload.category) {
+      throw new Error('Product name and category are required.');
+    }
+
+    await performAction('/admin/products', payload, 'Product added to the master catalog.');
+    setProductDraft({
+      name: '',
+      category: 'Bread',
+      price: '',
+      capacityToday: '',
+      capacityTomorrow: '',
+      cutoff: '6:00 PM',
+      badge: 'New',
+      note: '',
+    });
+  }
+
+  async function toggleProductAvailability(product: Product) {
+    if (!token) return;
+    await performAction(
+      `/admin/products/${product.id}/toggle`,
+      { available: !(product.active ?? product.available ?? false) },
+      `${product.name} availability updated.`,
+    );
+  }
+
+  async function toggleProductPublish(product: Product) {
+    if (!token) return;
+    await performAction(
+      `/admin/products/${product.id}/publish`,
+      { published: !(product.published ?? false) },
+      `${product.name} publish state updated.`,
+    );
+  }
+
   if (loadingAuth) {
-    return <LoadingScreen message="Checking session..." />;
+    return <LoadingScreen message={SHOW_DEMO_ACCESS ? 'Opening demo workspace...' : 'Checking session...'} />;
   }
 
   if (!session) {
@@ -1840,6 +1923,15 @@ export default function Home() {
         error={loginError}
         onUsernameChange={setLoginUsername}
         onPasswordChange={setLoginPassword}
+        onDemoSignIn={
+          SHOW_DEMO_ACCESS
+            ? () => {
+                setLoginUsername('owner');
+                setLoginPassword('owner123');
+                login('owner', 'owner123').catch((loginFailure) => setLoginError((loginFailure as Error).message));
+              }
+            : undefined
+        }
         onSubmit={() =>
           login().catch((loginFailure) => setLoginError((loginFailure as Error).message))
         }
@@ -2045,7 +2137,7 @@ export default function Home() {
                           {permissions.canEditOrders ? 'Order edits enabled' : 'Order edits restricted'}
                         </span>
                         <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-100">
-                          {permissions.canSyncErp ? 'ERP sync enabled' : 'ERP sync restricted'}
+                          {permissions.canSyncErp ? 'ERP access granted; connector pending' : 'ERP access restricted'}
                         </span>
                       </div>
                     </div>
@@ -2093,7 +2185,7 @@ export default function Home() {
                     <div className="mt-3 text-3xl font-black text-slate-950">{metrics.capacityFill}%</div>
                     <div className="mt-2 text-sm text-slate-500">Booked against available capacity.</div>
                   </div>
-                  <div className="rounded-[1.5rem] border-t-4 border-violet-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
+                  <div className="rounded-[1.5rem] border-t-4 border-amber-500 bg-white p-5 shadow-[0_18px_50px_rgba(36,18,7,.08)]">
                     <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">Route fill</div>
                     <div className="mt-3 text-3xl font-black text-slate-950">{metrics.routeFill}%</div>
                     <div className="mt-2 text-sm text-slate-500">Dispatch load across today’s slots.</div>
@@ -2844,7 +2936,7 @@ export default function Home() {
                         </div>
                         {erpContractPreview ? (
                           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">ERP contract preview</div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">ERP contract export</div>
                             <div className="mt-1 text-sm font-semibold text-slate-900">
                               {erpContractPreview.orderCount} orders, {erpContractPreview.batchCount} batches
                             </div>
@@ -3108,6 +3200,81 @@ export default function Home() {
                         ).catch((actionError) => setError((actionError as Error).message));
                       }}
                     />
+                  </div>
+                </Card>
+
+                <Card title="Product master" subtitle="Create products, control sale availability, and publish what customers can order.">
+                  <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field label="Product name" value={productDraft.name} onChange={(value) => setProductDraft((current) => ({ ...current, name: value }))} placeholder="Sourdough Loaf" />
+                      <Field label="Category" value={productDraft.category} onChange={(value) => setProductDraft((current) => ({ ...current, category: value }))} placeholder="Bread" />
+                      <Field label="Price" value={productDraft.price} onChange={(value) => setProductDraft((current) => ({ ...current, price: value }))} placeholder="125" />
+                      <Field label="Cutoff" value={productDraft.cutoff} onChange={(value) => setProductDraft((current) => ({ ...current, cutoff: value }))} placeholder="6:00 PM" />
+                      <Field label="Today cap" value={productDraft.capacityToday} onChange={(value) => setProductDraft((current) => ({ ...current, capacityToday: value }))} placeholder="120" />
+                      <Field label="Tomorrow cap" value={productDraft.capacityTomorrow} onChange={(value) => setProductDraft((current) => ({ ...current, capacityTomorrow: value }))} placeholder="180" />
+                    </div>
+                    <Field label="Badge" value={productDraft.badge} onChange={(value) => setProductDraft((current) => ({ ...current, badge: value }))} placeholder="New" />
+                    <label className="grid gap-2">
+                      <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Description</span>
+                      <textarea
+                        value={productDraft.note}
+                        onChange={(event) => setProductDraft((current) => ({ ...current, note: event.target.value }))}
+                        placeholder="Short product note for the customer app."
+                        className="min-h-24 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none shadow-[0_10px_24px_rgba(36,18,7,.04)] transition placeholder:text-slate-400 focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          createProductMasterEntry().catch((error) => setError((error as Error).message));
+                        }}
+                        className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white"
+                      >
+                        Add product
+                      </button>
+                    </div>
+                    <div className="space-y-3">
+                      {products.slice(0, 5).map((product) => {
+                        const isActive = product.active ?? product.available ?? false;
+                        const isPublished = product.published ?? true;
+                        return (
+                          <div key={product.id} className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="font-semibold text-stone-950">{product.name}</div>
+                                <div className="text-xs text-stone-500">
+                                  {product.category} | Rs. {(product.price ?? product.unitPrice).toLocaleString()}
+                                </div>
+                              </div>
+                              <div className="text-xs uppercase tracking-[0.18em] text-stone-500">
+                                {isActive ? 'Live' : 'Hidden'} | {isPublished ? 'Published' : 'Draft'}
+                              </div>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  toggleProductAvailability(product).catch((error) => setError((error as Error).message));
+                                }}
+                                className="rounded-full border border-stone-300 px-3 py-1.5 text-xs font-black uppercase tracking-[0.18em] text-stone-700"
+                              >
+                                {isActive ? 'Turn off' : 'Turn on'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  toggleProductPublish(product).catch((error) => setError((error as Error).message));
+                                }}
+                                className="rounded-full border border-stone-300 px-3 py-1.5 text-xs font-black uppercase tracking-[0.18em] text-stone-700"
+                              >
+                                {isPublished ? 'Unpublish' : 'Publish'}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </Card>
 
@@ -3542,7 +3709,7 @@ export default function Home() {
                   {erpContractPreview ? (
                     <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3">
                       <div className="text-xs uppercase tracking-[0.18em] text-stone-400">
-                        Contract preview
+                        Contract export
                       </div>
                       <div className="mt-1 text-sm font-semibold text-stone-900">
                         {erpContractPreview.orderCount} orders, {erpContractPreview.batchCount} batches
@@ -3697,11 +3864,11 @@ export default function Home() {
                     }}
                     className="rounded-2xl bg-stone-950 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
                   >
-                    Push export preview
+                    Push export
                   </button>
                 </div>
               ) : (
-                <GateMessage message="ERP export preview is available only for sync-enabled roles." />
+                <GateMessage message="ERP export access is available only for sync-enabled roles." />
               )}
             </Card>
 
@@ -4771,6 +4938,7 @@ function LoginScreen({
   error,
   onUsernameChange,
   onPasswordChange,
+  onDemoSignIn,
   onSubmit,
 }: {
   username: string;
@@ -4778,6 +4946,7 @@ function LoginScreen({
   error: string | null;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
+  onDemoSignIn?: () => void;
   onSubmit: () => void;
 }) {
   return (
@@ -4845,6 +5014,15 @@ function LoginScreen({
               >
                 Sign in
               </button>
+              {onDemoSignIn ? (
+                <button
+                  type="button"
+                  onClick={onDemoSignIn}
+                  className="h-12 rounded-full border border-amber-200 bg-amber-50 px-5 text-sm font-semibold text-amber-900 shadow-sm transition hover:-translate-y-0.5"
+                >
+                  Open demo workspace
+                </button>
+              ) : null}
               {SHOW_DEMO_ACCESS ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                   Demo accounts: owner / owner123, manager / manager123, production / production123,

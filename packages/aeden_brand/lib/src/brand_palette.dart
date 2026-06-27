@@ -21,8 +21,8 @@ class AedenPalette {
   static const greenSoft = Color(0xFFECFDF3);
   static const red = Color(0xFFB91C1C);
   static const redSoft = Color(0xFFFEF2F2);
-  static const blue = Color(0xFF7C3F12);
-  static const blueSoft = Color(0xFFFBE7D0);
+  static const blue = Color(0xFF8B5A2B);
+  static const blueSoft = Color(0xFFF6E7D8);
   static const navy = Color(0xFF3B2416);
   static const navyDeep = Color(0xFF241207);
   static const slate = Color(0xFF5B4537);

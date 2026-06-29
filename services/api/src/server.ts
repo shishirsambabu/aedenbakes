@@ -732,6 +732,24 @@ type CustomerApplicationRecord = {
   submittedAt: string;
   status: 'submitted' | 'under_review' | 'approved' | 'rejected' | 'needs_more_info';
   note: string;
+  // R2.1 intake + activation fields. Optional so existing display seeds remain valid.
+  loginId?: string;
+  phone?: string;
+  defaultAddress?: string;
+  submittedAtIso?: string;
+  reviewNotes?: string;
+  decision?: {
+    decidedBy: string;
+    decidedAt: string;
+    tier: string;
+    creditLimit: number;
+  };
+  activation?: {
+    customerId: string;
+    branchId: string;
+    authUserId: string;
+    activatedAt: string;
+  };
 };
 
 type SavedAddress = {
@@ -1052,6 +1070,7 @@ const otpChallenges = new Map<string, OtpChallenge>();
 const otpVerifications = new Map<string, OtpVerification>();
 const loginAttempts = new Map<string, LoginAttempt>();
 const otpRequestAttempts = new Map<string, LoginAttempt>();
+const applicationAttempts = new Map<string, LoginAttempt>();
 let auditEvents: AuditEvent[] = [];
 let approvals: ApprovalRequest[] = [];
 let branchApprovalRules = [
@@ -1569,6 +1588,23 @@ function consumeOtpRequest(key: string) {
     attempt.blockedUntil = now + 15 * 60 * 1000;
   }
   otpRequestAttempts.set(key, attempt);
+  return getBlockedSeconds(attempt);
+}
+
+function consumeApplicationRequest(key: string) {
+  const now = Date.now();
+  const existing = applicationAttempts.get(key);
+  const attempt = !existing || now - existing.windowStartedAt > 60 * 60 * 1000
+    ? { failures: 0, windowStartedAt: now, blockedUntil: 0 }
+    : existing;
+  if (attempt.blockedUntil > now) {
+    return getBlockedSeconds(attempt);
+  }
+  attempt.failures += 1;
+  if (attempt.failures > 5) {
+    attempt.blockedUntil = now + 60 * 60 * 1000;
+  }
+  applicationAttempts.set(key, attempt);
   return getBlockedSeconds(attempt);
 }
 
@@ -2399,6 +2435,82 @@ app.post('/customer/onboard', async (req, res) => {
   });
 });
 
+// Public application intake (R2.1). Creates ONLY an application record. It
+// never creates a customer, branch, login, or session, and it never applies
+// applicant-supplied commercial terms. Activation happens at admin approval.
+app.post('/customer/applications', (req, res) => {
+  const input = req.body as {
+    businessName?: string;
+    contactPerson?: string;
+    loginId?: string;
+    phone?: string;
+    defaultAddress?: string;
+    zone?: string;
+    city?: string;
+    gstin?: string;
+    requestedCredit?: string;
+    documents?: unknown;
+    note?: string;
+  };
+
+  const businessName = input.businessName?.trim();
+  const contactPerson = input.contactPerson?.trim();
+  const loginId = (input.loginId ?? input.phone)?.trim();
+  const phone = input.phone?.trim();
+  const defaultAddress = input.defaultAddress?.trim();
+  const zone = input.zone?.trim();
+  const gstin = input.gstin?.trim();
+
+  if (!businessName || !contactPerson || !loginId || !defaultAddress || !zone) {
+    res.status(400).json({ error: 'businessName, contactPerson, loginId, defaultAddress, and zone are required' });
+    return;
+  }
+
+  const throttleKey = `${req.ip}:${loginId.toLowerCase()}`;
+  const blockedSeconds = consumeApplicationRequest(throttleKey);
+  if (blockedSeconds > 0) {
+    res.setHeader('retry-after', String(blockedSeconds));
+    res.status(429).json({ error: 'Too many application submissions. Try again later.' });
+    return;
+  }
+
+  const documents = Array.isArray(input.documents)
+    ? input.documents
+        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+
+  const now = new Date();
+  const application: CustomerApplicationRecord = {
+    id: `app_${crypto.randomUUID().slice(0, 8)}`,
+    businessName,
+    city: input.city?.trim() || zone,
+    zone,
+    contactPerson,
+    gstin: gstin ?? '',
+    // Applicant-requested credit is captured as an unverified note only; it is
+    // never applied. The admin sets the real terms at approval time.
+    requestedCredit: input.requestedCredit?.trim() || 'Not specified',
+    documents,
+    submittedAt: now.toLocaleString(),
+    submittedAtIso: now.toISOString(),
+    status: 'submitted',
+    note: input.note?.trim() || `${businessName} submitted an onboarding application.`,
+    loginId,
+    phone,
+    defaultAddress,
+  };
+  customerApplications.unshift(application);
+  recordAudit({
+    kind: 'approval_queued',
+    actor: contactPerson,
+    summary: `Received onboarding application ${application.id} for ${businessName}.`,
+    referenceId: application.id,
+  });
+  persistStateSoon();
+  res.status(201).json({ application });
+});
+
 app.get('/customer/dashboard', authenticate, requireAnyRole(['customer']), (req, res) => {
   const customerId = req.session?.user.customerId;
   if (!customerId) {
@@ -2733,6 +2845,88 @@ app.post('/admin/products/:id/publish', authenticate, requireAnyRole(['owner', '
   res.json({ product, products });
 });
 
+// Activates an approved application: creates the customer, primary branch,
+// account user, and customer login. Commercial terms come from the admin
+// decision, never from the applicant. Returns the issued credentials.
+function activateCustomerFromApplication(
+  application: CustomerApplicationRecord,
+  terms: { tier: string; creditLimit: number; actor: string },
+) {
+  const loginId = application.loginId!.trim();
+  const name = application.businessName.trim();
+  const deliveryZone = application.zone.trim();
+  const defaultAddress = (application.defaultAddress ?? '').trim() || `${name} primary address`;
+  const now = new Date().toISOString();
+
+  const customer: CustomerAccount = {
+    id: `cust_${crypto.randomUUID().slice(0, 8)}`,
+    name,
+    tier: terms.tier,
+    creditLimit: terms.creditLimit,
+    outstandingBalance: 0,
+    riskState: 'healthy',
+    deliveryZone,
+  };
+  refreshCustomerRisk(customer);
+  customers.unshift(customer);
+
+  const temporaryPassword = crypto.randomBytes(9).toString('base64url');
+  const authRecord: AuthRecord = {
+    id: `cust_auth_${crypto.randomUUID()}`,
+    username: loginId,
+    loginId,
+    displayName: name,
+    role: 'customer',
+    passwordHash: hashPassword(temporaryPassword),
+    customerId: customer.id,
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+    phone: application.phone ?? loginId,
+    defaultAddress,
+    deliveryZone,
+  };
+  customerAuthRecords.unshift(authRecord);
+  persistAuthPrincipal(authRecord);
+
+  const primaryBranch: CustomerBranch = {
+    id: `branch_${customer.id}_main`,
+    customerId: customer.id,
+    name: `${name} - Main`,
+    code: `${customer.id.slice(-4).toUpperCase()}-MAIN`,
+    status: 'active',
+    serviceZone: deliveryZone,
+    deliveryNotes: defaultAddress,
+    createdAt: now,
+    updatedAt: now,
+  };
+  customerBranches.unshift(primaryBranch);
+
+  const accountUser: CustomerUserMembership = {
+    id: `cust_user_${crypto.randomUUID().slice(0, 8)}`,
+    customerId: customer.id,
+    branchId: primaryBranch.id,
+    displayName: name,
+    role: 'admin',
+    status: 'active',
+    phone: application.phone ?? loginId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  customerUsers.unshift(accountUser);
+
+  application.activation = {
+    customerId: customer.id,
+    branchId: primaryBranch.id,
+    authUserId: authRecord.id,
+    activatedAt: now,
+  };
+  application.decision = { decidedBy: terms.actor, decidedAt: now, tier: terms.tier, creditLimit: terms.creditLimit };
+
+  rebuildOperationalState();
+  return { customer, branch: primaryBranch, authUser: authRecord, temporaryPassword };
+}
+
 app.get('/admin/applications', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
   res.json({ applications: customerApplications });
 });
@@ -2744,25 +2938,114 @@ app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner'
     return;
   }
 
-  const body = req.body as { decision?: 'approve' | 'reject' | 'request_more_info' };
+  const body = req.body as {
+    decision?: 'approve' | 'reject' | 'request_more_info';
+    tier?: string;
+    creditLimit?: number;
+    reason?: string;
+  };
   const decision = body.decision ?? 'approve';
-  application.status =
-    decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : 'needs_more_info';
-  application.note =
-    decision === 'approve'
-      ? `${application.businessName} approved by admin review.`
-      : decision === 'reject'
-        ? `${application.businessName} rejected by admin review.`
-        : `${application.businessName} needs more information before approval.`;
+  const actor = req.session?.user.username ?? 'system';
 
+  // Terminal states cannot be re-decided.
+  if (application.status === 'approved' && application.activation) {
+    res.status(409).json({ error: 'Application is already approved and activated', application });
+    return;
+  }
+  if (application.status === 'rejected') {
+    res.status(409).json({ error: 'Rejected applications cannot be decided again', application });
+    return;
+  }
+
+  if (decision === 'reject') {
+    const reason = body.reason?.trim();
+    if (!reason) {
+      res.status(400).json({ error: 'A rejection reason is required' });
+      return;
+    }
+    application.status = 'rejected';
+    application.reviewNotes = reason;
+    application.note = `${application.businessName} rejected: ${reason}`;
+    recordAudit({
+      kind: 'approval_rejected',
+      actor,
+      summary: `${application.businessName} application rejected.`,
+      referenceId: application.id,
+    });
+    persistStateSoon();
+    res.json({ application, applications: customerApplications });
+    return;
+  }
+
+  if (decision === 'request_more_info') {
+    const reason = body.reason?.trim();
+    if (!reason) {
+      res.status(400).json({ error: 'A note describing the missing information is required' });
+      return;
+    }
+    application.status = 'needs_more_info';
+    application.reviewNotes = reason;
+    application.note = `${application.businessName} needs more information: ${reason}`;
+    recordAudit({
+      kind: 'approval_queued',
+      actor,
+      summary: `${application.businessName} application needs more information.`,
+      referenceId: application.id,
+    });
+    persistStateSoon();
+    res.json({ application, applications: customerApplications });
+    return;
+  }
+
+  // Approval performs activation with admin-set commercial terms.
+  const tier = body.tier?.trim();
+  const creditLimit = Number(body.creditLimit);
+  if (!tier || !Number.isFinite(creditLimit) || creditLimit < 0) {
+    res.status(400).json({
+      error: 'Approval requires admin-set commercial terms: a tier and a non-negative creditLimit',
+    });
+    return;
+  }
+  if (!application.loginId?.trim()) {
+    res.status(422).json({ error: 'Application is missing the loginId needed to activate a customer login' });
+    return;
+  }
+  const existingLogin = customerAuthRecords.find(
+    (entry) => entry.username === application.loginId && entry.active !== false,
+  );
+  if (existingLogin) {
+    res.status(409).json({ error: 'A customer login already exists for this applicant loginId' });
+    return;
+  }
+
+  const activation = activateCustomerFromApplication(application, { tier, creditLimit, actor });
+  application.status = 'approved';
+  application.note = `${application.businessName} approved and activated by ${actor}.`;
   recordAudit({
-    kind: decision === 'approve' ? 'approval_approved' : 'approval_rejected',
-    actor: req.session?.user.username ?? 'system',
-    summary: `${application.businessName} application ${application.status}.`,
+    kind: 'approval_approved',
+    actor,
+    summary: `${application.businessName} approved; activated customer ${activation.customer.id}.`,
     referenceId: application.id,
   });
+  enqueueNotification({
+    customerId: activation.customer.id,
+    channel: 'in_app',
+    templateCode: 'customer_onboarded',
+    subject: `Welcome ${activation.customer.name}`,
+    correlationKey: `activate:${activation.customer.id}`,
+    recipient: activation.customer.id,
+  });
   persistStateSoon();
-  res.json({ application, applications: customerApplications });
+  res.status(201).json({
+    application,
+    applications: customerApplications,
+    customer: activation.customer,
+    branch: activation.branch,
+    credentials: {
+      loginId: activation.authUser.loginId,
+      temporaryPassword: activation.temporaryPassword,
+    },
+  });
 });
 
 app.get('/customers', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {

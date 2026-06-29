@@ -8,9 +8,9 @@ This file is the release truth source during the recovery program. A capability 
 | Staff/customer sessions | Recovery implementation | 256-bit access tokens (hashed at rest) plus persistent rotating refresh tokens with replay detection, device-session listing/revocation, and authenticated password change; refresh tokens survive API restart; full forgot-password reset still awaits R7 email/OTP | R1, R2 |
 | Tenant authorization | Partial | Known branch and document cross-tenant leaks are closed; full policy coverage remains in progress | R1, R3 |
 | Customer OTP | Partial | MSG91-capable; runtime configuration and live provider test required | R0, R2 |
-| Customer onboarding | Unsafe prototype | Application intake prototype; does not represent approved activation | R2 |
+| Customer onboarding | Recovery implementation | Public intake creates only an application; no customer, branch, login, or session exists until admin approval. Real document upload still pending (R2.2) | R2 |
 | GST/FSSAI/cheque upload | Simulated | Document metadata only; files are not uploaded | R2 |
-| Customer approval | Partial | Admin decision screens exist; activation boundary is not enforced | R2 |
+| Customer approval | Recovery implementation | Admin approval is the only activation path; commercial terms (tier, credit limit) are admin-set, not applicant-supplied; approval creates the customer, branch, account user, and login. Maker-checker and document review still pending | R2 |
 | Customer session restore | Absent | Session is not retained after relaunch | R2 |
 | Branch management | Partial | Branch records exist; approval and tenant guards are incomplete | R3 |
 | Customer roles/approvals | Partial | Role records exist; end-to-end enforcement is incomplete | R3 |

@@ -222,6 +222,9 @@ export interface AuditEvent {
     | 'delivery_pod_completed'
     | 'delivery_failed'
     | 'delivery_returned'
+    | 'auth_password_changed'
+    | 'auth_session_revoked'
+    | 'auth_token_reuse_detected'
     | 'customer_onboarded'
     | 'customer_order_placed'
     | 'customer_order_rejected';

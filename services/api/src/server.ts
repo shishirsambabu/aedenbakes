@@ -8,7 +8,15 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ROLE_PERMISSIONS, canAccessCustomerResource, hasAnyRole, hasPermission } from './policy.js';
 import type { AuthPermission, AuthRole } from './policy.js';
-import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from './security.js';
+import {
+  generateRefreshToken,
+  generateSessionToken,
+  hashPassword,
+  hashSessionToken,
+  parseRefreshTokenSessionId,
+  timingSafeEqualHex,
+  verifyPassword,
+} from './security.js';
 import {
   capacities,
   customers,
@@ -321,9 +329,41 @@ type LoginAttempt = {
 type Session = {
   token: string;
   user: SessionUser;
+  sessionId?: string;
   createdAt: string;
   expiresAt: string;
 };
+
+type SessionContext = {
+  userAgent: string | null;
+  ip: string | null;
+  deviceLabel: string;
+};
+
+type RefreshSessionRow = {
+  id: string;
+  user_id: string;
+  refresh_token_hash: string;
+  previous_token_hash: string | null;
+  user_json: string;
+  device_label: string;
+  user_agent: string | null;
+  ip: string | null;
+  created_at: string;
+  last_used_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+};
+
+type RefreshRotationResult =
+  | {
+      ok: true;
+      user: SessionUser;
+      sessionId: string;
+      refreshToken: string;
+      refreshExpiresAt: string;
+    }
+  | { ok: false; reason: 'invalid' | 'expired' | 'revoked' | 'reuse' };
 
 type OtpChallenge = {
   id: string;
@@ -884,6 +924,21 @@ database.exec(`
     user_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS auth_refresh_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    refresh_token_hash TEXT NOT NULL,
+    previous_token_hash TEXT,
+    user_json TEXT NOT NULL,
+    device_label TEXT NOT NULL,
+    user_agent TEXT,
+    ip TEXT,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS auth_principals (
@@ -1527,13 +1582,18 @@ function toSessionUser(record: AuthRecord): SessionUser {
   };
 }
 
-function issueSession(user: SessionUser) {
+const ACCESS_SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const REFRESH_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const MIN_PASSWORD_LENGTH = 8;
+
+function issueSession(user: SessionUser, sessionId?: string) {
   const token = generateSessionToken();
   const session: Session = {
     token,
     user,
+    sessionId,
     createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString(),
+    expiresAt: new Date(Date.now() + ACCESS_SESSION_TTL_MS).toISOString(),
   };
   sessions.set(token, session);
   database
@@ -1549,6 +1609,221 @@ function issueSession(user: SessionUser) {
     )
     .run(hashSessionToken(token), JSON.stringify(session.user), session.createdAt, session.expiresAt);
   return session;
+}
+
+function describeDevice(userAgent: string | null) {
+  if (!userAgent) {
+    return 'Unknown device';
+  }
+  const ua = userAgent.toLowerCase();
+  if (ua.includes('android')) return 'Android app';
+  if (ua.includes('iphone') || ua.includes('ipad') || ua.includes(' ios')) return 'iOS app';
+  if (ua.includes('dart') || ua.includes('flutter')) return 'Mobile app';
+  if (ua.includes('edg/')) return 'Edge browser';
+  if (ua.includes('chrome')) return 'Chrome browser';
+  if (ua.includes('firefox')) return 'Firefox browser';
+  if (ua.includes('safari')) return 'Safari browser';
+  return 'Web/API client';
+}
+
+function sessionContextFromRequest(req: express.Request): SessionContext {
+  const userAgent = req.header('user-agent') ?? null;
+  return {
+    userAgent,
+    ip: req.ip ?? null,
+    deviceLabel: describeDevice(userAgent),
+  };
+}
+
+function getRefreshSessionRow(sessionId: string) {
+  return database
+    .prepare('SELECT * FROM auth_refresh_sessions WHERE id = ?')
+    .get(sessionId) as RefreshSessionRow | undefined;
+}
+
+// Creates a persistent device session whose refresh token survives API restarts.
+// Only token hashes are stored at rest.
+function createRefreshSession(user: SessionUser, context: SessionContext) {
+  const sessionId = `rsess_${crypto.randomUUID()}`;
+  const refreshToken = generateRefreshToken(sessionId);
+  const now = new Date();
+  const refreshExpiresAt = new Date(now.getTime() + REFRESH_SESSION_TTL_MS).toISOString();
+  database
+    .prepare(
+      `
+      INSERT INTO auth_refresh_sessions (
+        id, user_id, refresh_token_hash, previous_token_hash, user_json,
+        device_label, user_agent, ip, created_at, last_used_at, expires_at, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      `,
+    )
+    .run(
+      sessionId,
+      user.id,
+      hashSessionToken(refreshToken),
+      null,
+      JSON.stringify(user),
+      context.deviceLabel,
+      context.userAgent,
+      context.ip,
+      now.toISOString(),
+      now.toISOString(),
+      refreshExpiresAt,
+    );
+  return { sessionId, refreshToken, refreshExpiresAt };
+}
+
+// Validates a presented refresh token, detects replay of an already-rotated
+// token, and rotates to a fresh refresh token on success.
+function rotateRefreshSession(presentedToken: string, context: SessionContext): RefreshRotationResult {
+  const sessionId = parseRefreshTokenSessionId(presentedToken);
+  if (!sessionId) {
+    return { ok: false, reason: 'invalid' };
+  }
+  const row = getRefreshSessionRow(sessionId);
+  if (!row) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (row.revoked_at) {
+    return { ok: false, reason: 'revoked' };
+  }
+
+  const presentedHash = hashSessionToken(presentedToken);
+  if (row.previous_token_hash && timingSafeEqualHex(presentedHash, row.previous_token_hash)) {
+    // A token we already rotated away from is being replayed: treat the whole
+    // device session as compromised.
+    revokeRefreshSession(sessionId, 'token_reuse_detected', 'system', 'auth_token_reuse_detected');
+    return { ok: false, reason: 'reuse' };
+  }
+  if (!timingSafeEqualHex(presentedHash, row.refresh_token_hash)) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    return { ok: false, reason: 'expired' };
+  }
+
+  const user = JSON.parse(row.user_json) as SessionUser;
+  const rotatedToken = generateRefreshToken(sessionId);
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      `
+      UPDATE auth_refresh_sessions
+      SET previous_token_hash = ?, refresh_token_hash = ?, last_used_at = ?, user_agent = ?, ip = ?
+      WHERE id = ?
+      `,
+    )
+    .run(
+      row.refresh_token_hash,
+      hashSessionToken(rotatedToken),
+      now,
+      context.userAgent ?? row.user_agent,
+      context.ip ?? row.ip,
+      sessionId,
+    );
+  return {
+    ok: true,
+    user,
+    sessionId,
+    refreshToken: rotatedToken,
+    refreshExpiresAt: row.expires_at,
+  };
+}
+
+// Drops any in-memory access tokens bound to a device session so revocation
+// takes effect immediately, not just at next access-token expiry.
+function dropAccessTokensForSession(sessionId: string) {
+  for (const [token, session] of sessions) {
+    if (session.sessionId === sessionId) {
+      sessions.delete(token);
+      database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(hashSessionToken(token));
+    }
+  }
+}
+
+function revokeRefreshSession(
+  sessionId: string,
+  reason: string,
+  actor = 'system',
+  auditKind: 'auth_session_revoked' | 'auth_token_reuse_detected' = 'auth_session_revoked',
+) {
+  const now = new Date().toISOString();
+  const result = database
+    .prepare('UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+    .run(now, sessionId);
+  dropAccessTokensForSession(sessionId);
+  if (result.changes > 0) {
+    recordAudit({
+      kind: auditKind,
+      actor,
+      summary: `Revoked device session ${sessionId} (${reason}).`,
+      referenceId: sessionId,
+    });
+  }
+  return result.changes > 0;
+}
+
+function revokeAllRefreshSessionsForUser(userId: string, options: { exceptSessionId?: string; reason: string; actor: string }) {
+  const rows = database
+    .prepare('SELECT id FROM auth_refresh_sessions WHERE user_id = ? AND revoked_at IS NULL')
+    .all(userId) as Array<{ id: string }>;
+  let revoked = 0;
+  for (const row of rows) {
+    if (row.id === options.exceptSessionId) {
+      continue;
+    }
+    if (revokeRefreshSession(row.id, options.reason, options.actor)) {
+      revoked += 1;
+    }
+  }
+  return revoked;
+}
+
+function listRefreshSessionsForUser(userId: string, currentSessionId?: string) {
+  const rows = database
+    .prepare(
+      'SELECT * FROM auth_refresh_sessions WHERE user_id = ? AND revoked_at IS NULL ORDER BY last_used_at DESC',
+    )
+    .all(userId) as RefreshSessionRow[];
+  const now = Date.now();
+  return rows
+    .filter((row) => new Date(row.expires_at).getTime() > now)
+    .map((row) => ({
+      id: row.id,
+      deviceLabel: row.device_label,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+      expiresAt: row.expires_at,
+      current: row.id === currentSessionId,
+    }));
+}
+
+function findAuthRecordById(id: string) {
+  return (
+    authUsers.find((entry) => entry.id === id) ??
+    customerAuthRecords.find((entry) => entry.id === id)
+  );
+}
+
+function isStrongPassword(password: unknown): password is string {
+  return typeof password === 'string' && password.trim().length >= MIN_PASSWORD_LENGTH;
+}
+
+function buildAuthPayload(session: Session, device: { refreshToken: string; refreshExpiresAt: string; sessionId: string }) {
+  return {
+    token: session.token,
+    expiresAt: session.expiresAt,
+    refreshToken: device.refreshToken,
+    refreshExpiresAt: device.refreshExpiresAt,
+    sessionId: device.sessionId,
+    user: {
+      id: session.user.id,
+      username: session.user.username,
+      displayName: session.user.displayName,
+      role: session.user.role,
+      customerId: session.user.customerId,
+    },
+  };
 }
 
 app.get('/health', (_req, res) => {
@@ -1593,28 +1868,25 @@ app.post('/auth/login', (req, res) => {
 
   loginAttempts.delete(attemptKey);
 
-  const session = issueSession(toSessionUser(record));
+  const sessionUser = toSessionUser(record);
+  const device = createRefreshSession(sessionUser, sessionContextFromRequest(req));
+  const session = issueSession(sessionUser, device.sessionId);
   persistStateSoon();
 
-  res.json({
-    token: session.token,
-    user: {
-      id: session.user.id,
-      username: session.user.username,
-      displayName: session.user.displayName,
-      role: session.user.role,
-      customerId: session.user.customerId,
-    },
-  });
+  res.json(buildAuthPayload(session, device));
 });
 
 app.post('/auth/logout', authenticate, (req, res) => {
   const token = getToken(req);
+  const sessionId = req.session?.sessionId;
   if (token) {
     sessions.delete(token);
     database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(hashSessionToken(token));
-    persistStateSoon();
   }
+  if (sessionId) {
+    revokeRefreshSession(sessionId, 'logout', req.session!.user.username);
+  }
+  persistStateSoon();
 
   res.json({ ok: true });
 });
@@ -1632,6 +1904,115 @@ app.get('/auth/me', authenticate, (req, res) => {
     permissions: ROLE_PERMISSIONS[session.user.role],
     expiresAt: session.expiresAt,
   });
+});
+
+// Exchanges a valid refresh token for a fresh access token, rotating the
+// refresh token. Works after an API restart because refresh sessions persist.
+app.post('/auth/refresh', (req, res) => {
+  const { refreshToken } = req.body as { refreshToken?: string };
+  if (!refreshToken || typeof refreshToken !== 'string') {
+    res.status(400).json({ error: 'refreshToken is required' });
+    return;
+  }
+
+  const result = rotateRefreshSession(refreshToken, sessionContextFromRequest(req));
+  if (!result.ok) {
+    if (result.reason === 'reuse') {
+      res.status(401).json({ error: 'Refresh token reuse detected; session revoked', code: 'REFRESH_TOKEN_REUSE' });
+      return;
+    }
+    res.status(401).json({ error: 'Invalid or expired refresh token' });
+    return;
+  }
+
+  const session = issueSession(result.user, result.sessionId);
+  persistStateSoon();
+  res.json(
+    buildAuthPayload(session, {
+      refreshToken: result.refreshToken,
+      refreshExpiresAt: result.refreshExpiresAt,
+      sessionId: result.sessionId,
+    }),
+  );
+});
+
+// Lists the signed-in user's active device sessions.
+app.get('/auth/sessions', authenticate, (req, res) => {
+  const session = req.session!;
+  res.json({ sessions: listRefreshSessionsForUser(session.user.id, session.sessionId) });
+});
+
+// Revokes a single device session owned by the signed-in user.
+app.delete('/auth/sessions/:id', authenticate, (req, res) => {
+  const session = req.session!;
+  const targetId = readRouteParam(req.params.id);
+  const row = getRefreshSessionRow(targetId);
+  if (!row || row.user_id !== session.user.id || row.revoked_at) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  revokeRefreshSession(targetId, 'user_revoked', session.user.username);
+  persistStateSoon();
+  res.json({ ok: true, sessions: listRefreshSessionsForUser(session.user.id, session.sessionId) });
+});
+
+// Revokes every other device session, keeping the current one active.
+app.post('/auth/sessions/revoke-all', authenticate, (req, res) => {
+  const session = req.session!;
+  const revoked = revokeAllRefreshSessionsForUser(session.user.id, {
+    exceptSessionId: session.sessionId,
+    reason: 'user_revoked_all',
+    actor: session.user.username,
+  });
+  persistStateSoon();
+  res.json({ ok: true, revoked, sessions: listRefreshSessionsForUser(session.user.id, session.sessionId) });
+});
+
+// Authenticated self-service password change. Requires the current password,
+// rehashes the new one, and revokes every other device session.
+app.post('/auth/password', authenticate, (req, res) => {
+  const session = req.session!;
+  const { currentPassword, newPassword } = req.body as {
+    currentPassword?: string;
+    newPassword?: string;
+  };
+
+  if (!currentPassword || !newPassword) {
+    res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    return;
+  }
+  if (!isStrongPassword(newPassword)) {
+    res.status(400).json({ error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+    return;
+  }
+
+  const record = findAuthRecordById(session.user.id);
+  if (!record || !verifyPassword(currentPassword, record.passwordHash)) {
+    res.status(401).json({ error: 'Current password is incorrect' });
+    return;
+  }
+  if (verifyPassword(newPassword, record.passwordHash)) {
+    res.status(400).json({ error: 'New password must differ from the current password' });
+    return;
+  }
+
+  record.passwordHash = hashPassword(newPassword);
+  record.updatedAt = new Date().toISOString();
+  persistAuthPrincipal(record);
+
+  const revoked = revokeAllRefreshSessionsForUser(session.user.id, {
+    exceptSessionId: session.sessionId,
+    reason: 'password_changed',
+    actor: session.user.username,
+  });
+  recordAudit({
+    kind: 'auth_password_changed',
+    actor: session.user.username,
+    summary: `Changed password for ${session.user.username}; revoked ${revoked} other device session(s).`,
+    referenceId: session.user.id,
+  });
+  persistStateSoon();
+  res.json({ ok: true, revokedSessions: revoked });
 });
 
 app.post('/auth/otp/request', async (req, res) => {
@@ -1991,7 +2372,9 @@ app.post('/customer/onboard', async (req, res) => {
     });
   }
 
-  const session = issueSession(toSessionUser(authRecord));
+  const onboardingSessionUser = toSessionUser(authRecord);
+  const onboardingDevice = createRefreshSession(onboardingSessionUser, sessionContextFromRequest(req));
+  const session = issueSession(onboardingSessionUser, onboardingDevice.sessionId);
   recordAudit({
     kind: 'customer_onboarded',
     actor: loginId,
@@ -2010,14 +2393,7 @@ app.post('/customer/onboard', async (req, res) => {
   persistStateSoon();
 
   res.status(201).json({
-    token: session.token,
-    user: {
-      id: session.user.id,
-      username: session.user.username,
-      displayName: session.user.displayName,
-      role: session.user.role,
-      customerId: session.user.customerId,
-    },
+    ...buildAuthPayload(session, onboardingDevice),
     otpVerified: Boolean(otpActive),
     dashboard: buildCustomerDashboard(customer.id),
   });

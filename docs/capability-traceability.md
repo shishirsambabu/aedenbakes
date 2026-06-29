@@ -5,7 +5,7 @@ This file is the release truth source during the recovery program. A capability 
 | Capability | Current state | Release wording | Recovery phase |
 | --- | --- | --- | --- |
 | Password authentication | Recovery implementation | Salted scrypt hashes in normalized identity storage; production cutover awaits PostgreSQL | R1 |
-| Staff/customer sessions | Recovery implementation | 256-bit bearer tokens with token hashes at rest; sessions expire on API restart until refresh rotation is built | R1, R2 |
+| Staff/customer sessions | Recovery implementation | 256-bit access tokens (hashed at rest) plus persistent rotating refresh tokens with replay detection, device-session listing/revocation, and authenticated password change; refresh tokens survive API restart; full forgot-password reset still awaits R7 email/OTP | R1, R2 |
 | Tenant authorization | Partial | Known branch and document cross-tenant leaks are closed; full policy coverage remains in progress | R1, R3 |
 | Customer OTP | Partial | MSG91-capable; runtime configuration and live provider test required | R0, R2 |
 | Customer onboarding | Unsafe prototype | Application intake prototype; does not represent approved activation | R2 |

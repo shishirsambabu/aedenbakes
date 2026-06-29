@@ -47,10 +47,28 @@ Overall R1 status: **in progress - PostgreSQL adapter and cutover rehearsal rema
 1. Obtain/configure a managed PostgreSQL `DATABASE_URL`; the current configured value is a local file path.
 2. Build the PostgreSQL repository adapter that uses the normalized schema.
 3. Import and reconcile existing SQLite customer/order/operations data into normalized tables.
-4. Add refresh-token rotation, device sessions, explicit revocation, password reset, and staff invitation flows.
+4. Add staff invitation flows and a full forgot-password reset (depends on R7 email/OTP delivery). Refresh-token rotation, device sessions, explicit revocation, and authenticated password change are now delivered (see addendum).
 5. Replace role checks scattered through the monolith with centralized policy modules and test every route.
 6. Demonstrate backup, restore, migration rollback, and count/financial reconciliation in staging.
 
+## Session lifecycle addendum (2026-06-29)
+
+Batch status: **pass**
+
+Delivered:
+
+- Persistent device sessions backed by `auth_refresh_sessions`, storing only SHA-256 token hashes at rest, so refresh tokens survive an API restart while short-lived access tokens do not.
+- Refresh-token rotation on every `/auth/refresh`, with replay detection: presenting an already-rotated token revokes the whole device session.
+- `GET /auth/sessions`, `DELETE /auth/sessions/:id`, and `POST /auth/sessions/revoke-all` for device-session listing and revocation, scoped to the signed-in user.
+- Authenticated `POST /auth/password` change that verifies the current password, enforces a minimum length, rejects no-op changes, rehashes, and revokes all other device sessions.
+- Logout now revokes the current device session in addition to clearing the access token.
+- Audit events `auth_password_changed`, `auth_session_revoked`, and `auth_token_reuse_detected`.
+
+Verification:
+
+- API build: pass. API tests: 30 pass, 0 fail (7 new).
+- New tests cover rotation, refresh-token replay revocation, single/all device revocation, refresh survival across a real kill-and-respawn restart, and password-change validation plus session revocation.
+
 ## Gate decision
 
-Local recovery development can continue. Production remains intentionally blocked until the remaining R1 database and session work passes its own gate.
+Local recovery development can continue. Production remains intentionally blocked until the remaining R1 database work (managed PostgreSQL adapter and data cutover) passes its own gate.

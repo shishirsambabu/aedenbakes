@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
-import { requirePostgresDatabaseUrl, runPostgresMigrations } from './postgres-migrations.js';
+import { requirePostgresDatabaseUrl, resolvePostgresSsl, runPostgresMigrations } from './postgres-migrations.js';
 
 const { Client } = pg;
 
@@ -54,7 +54,7 @@ export async function runPostgresPreflight(databaseUrl = process.env.DATABASE_UR
   await runPostgresMigrations({ mode: 'check', databaseUrl: connectionString });
   checks.push({ name: 'migrations', ok: true, detail: 'All migration files are applied with matching checksums.' });
 
-  const client = new Client({ connectionString });
+  const client = new Client({ connectionString, ssl: resolvePostgresSsl(connectionString) });
   await client.connect();
   try {
     const tableResult = await client.query<TablePresence>(

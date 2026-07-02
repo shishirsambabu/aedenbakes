@@ -6930,8 +6930,17 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
 
 function resolveDatabasePath(databaseUrl: string) {
   const trimmed = databaseUrl.trim();
+  const defaultPath = join(process.cwd(), 'data', 'aeden-bakes.sqlite');
+
+  // A managed PostgreSQL URL is the migration/cutover target, not a SQLite
+  // file. Until the Postgres runtime adapter lands, the app keeps using a
+  // local SQLite file for its working store. SQLITE_PATH can override it.
+  if (/^postgres(ql)?:\/\//iu.test(trimmed)) {
+    return process.env.SQLITE_PATH?.trim() || defaultPath;
+  }
+
   if (!trimmed) {
-    return join(process.cwd(), 'data', 'aeden-bakes.sqlite');
+    return defaultPath;
   }
 
   if (trimmed.startsWith('file:')) {

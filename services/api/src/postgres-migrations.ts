@@ -50,6 +50,22 @@ export function stripOuterTransaction(sql: string) {
     .trim();
 }
 
+// Managed Postgres providers (Supabase, RDS, etc.) require TLS. Local
+// development databases do not. We keep remote connections encrypted without
+// verifying the CA chain so the recovery cutover does not need provider CA
+// bundles; production can tighten this once a CA is pinned.
+export function resolvePostgresSsl(connectionString: string): false | { rejectUnauthorized: boolean } {
+  try {
+    const host = new URL(connectionString).hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+      return false;
+    }
+  } catch {
+    // Fall through to the encrypted default for anything URL-like.
+  }
+  return { rejectUnauthorized: false };
+}
+
 export function requirePostgresDatabaseUrl(databaseUrl = process.env.DATABASE_URL?.trim() ?? '') {
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is missing. Add a managed PostgreSQL connection string before running migrations.');
@@ -66,7 +82,7 @@ export async function runPostgresMigrations(options: { mode?: MigrationMode; dat
   const mode = options.mode ?? 'apply';
   const databaseUrl = requirePostgresDatabaseUrl(options.databaseUrl);
   const migrations = await loadPostgresMigrations();
-  const client = new Client({ connectionString: databaseUrl });
+  const client = new Client({ connectionString: databaseUrl, ssl: resolvePostgresSsl(databaseUrl) });
 
   await client.connect();
   try {

@@ -101,8 +101,26 @@ Remaining before a production pilot: centralized authorization coverage
 (R1.5), backup/restore/rollback demonstration, and the normalized-table
 rewrite that replaces the single-row snapshot for multi-instance safety.
 
+## Authorization coverage addendum (2026-07-02, R1.5)
+
+Batch status: **pass**
+
+- Audited every route: all data endpoints carry `authenticate` plus
+  `requireAnyRole`/`requirePermission`, and all three checks resolve through
+  the central `policy` module (role, permission, and cross-tenant). The only
+  unauthenticated routes are the intended public ones (`/`, `/health`, login,
+  refresh, OTP request/verify, public application intake, `/storage/status`).
+- Added `test/authorization.test.mjs`: a route-level matrix asserting
+  anonymous rejection (401), customers blocked from staff routes and staff
+  blocked from customer routes (403), role-scoped routes enforcing the right
+  role, permission-gated routes rejecting roles that lack the permission
+  (with an owner positive control), cross-tenant denial (404) on documents and
+  branch serviceability, and positive controls for authorized roles.
+- No authorization gaps were found; the R1 centralization now has test cover.
+
 ## Gate decision
 
-The R1 secure data and identity cutover is complete on managed PostgreSQL.
-Production can boot with a managed PostgreSQL DATABASE_URL; full production
-certification (load, backup/restore, authorization coverage) remains R9.
+The R1 secure data and identity cutover is complete on managed PostgreSQL, and
+authorization is centralized and test-covered (R1.5). Production can boot with
+a managed PostgreSQL DATABASE_URL; full production certification (load,
+backup/restore) remains R9.

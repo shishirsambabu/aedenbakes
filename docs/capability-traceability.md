@@ -34,5 +34,5 @@ This file is the release truth source during the recovery program. A capability 
 | Next.js super-admin | Partial | Broad prototype with dead controls and no automated UI tests | R8 |
 | Root Vite admin/customer demo | Mock | Internal reference only; scheduled for removal after consolidation | R8 |
 | Analytics | Partial | Derived prototype metrics; not finance-certified | R8 |
-| Managed PostgreSQL schema | Recovery implementation | Supabase (session pooler + TLS) provisioned; both migrations applied and preflight passes (all required tables + pgcrypto). The running app still uses its local SQLite working store; the Postgres runtime adapter is the remaining R1 cutover work | R1 |
+| Managed PostgreSQL runtime | Recovery implementation | Supabase (session pooler + TLS) provisioned; migrations applied and preflight green. The app-state snapshot now persists to PostgreSQL when DATABASE_URL is postgres (round-trip verified against Supabase). Auth principals and refresh sessions still use local SQLite (batch A2). Single-instance snapshot model until the normalized-table rewrite | R1 |
 | Production deployment | Blocked by design | API refuses production startup until the secure PostgreSQL runtime cutover is complete; schema is provisioned but the app does not yet read/write live data from PostgreSQL | R1, R9 |

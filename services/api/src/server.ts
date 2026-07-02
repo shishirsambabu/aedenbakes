@@ -24,6 +24,7 @@ import {
   MAX_DOCUMENT_BYTES,
   validateDocumentUpload,
 } from './storage.js';
+import { isPostgresConnectionString, PostgresSnapshotStore, type SnapshotStore } from './durability.js';
 import {
   capacities,
   customers,
@@ -943,6 +944,14 @@ const database = new DatabaseSync(databasePath);
 const uploadStorageRoot =
   process.env.UPLOAD_STORAGE_DIR?.trim() || join(dirname(databasePath), 'uploads');
 const documentStorage = new LocalObjectStorage(uploadStorageRoot);
+
+// When DATABASE_URL is a managed PostgreSQL connection, the state snapshot is
+// persisted there so it survives redeploys on ephemeral-disk hosts. Otherwise
+// the local SQLite file remains the snapshot store (development and tests).
+const rawDatabaseUrl = process.env.DATABASE_URL?.trim() ?? '';
+const snapshotStore: SnapshotStore | null = isPostgresConnectionString(rawDatabaseUrl)
+  ? new PostgresSnapshotStore(rawDatabaseUrl)
+  : null;
 database.exec(`
   CREATE TABLE IF NOT EXISTS app_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1544,6 +1553,9 @@ let erpSyncStatus: ErpSyncStatus = {
   pendingCount: 1,
   failedCount: 0,
 };
+if (snapshotStore) {
+  await snapshotStore.init();
+}
 await loadState();
 const migratedLegacyPasswords = [...authUsers, ...customerAuthRecords].some((record) => Boolean(record.password));
 for (const record of [...authUsers, ...customerAuthRecords]) {
@@ -7112,17 +7124,22 @@ async function persistState() {
     invoiceExports,
   };
 
-  database
-    .prepare(
-      `
+  const snapshotJson = JSON.stringify(snapshot);
+  if (snapshotStore) {
+    await snapshotStore.saveSnapshot(snapshotJson);
+  } else {
+    database
+      .prepare(
+        `
       INSERT INTO app_state (id, snapshot, updated_at)
       VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         snapshot = excluded.snapshot,
         updated_at = excluded.updated_at
       `,
-    )
-    .run(JSON.stringify(snapshot), new Date().toISOString());
+      )
+      .run(snapshotJson, new Date().toISOString());
+  }
 
   const deleteSessions = database.prepare('DELETE FROM auth_sessions');
   deleteSessions.run();
@@ -7138,12 +7155,13 @@ async function persistState() {
 }
 
 async function loadState(): Promise<ApiStateSnapshot> {
-  const row = database.prepare('SELECT snapshot FROM app_state WHERE id = 1').get() as
-    | { snapshot: string }
-    | undefined;
+  const snapshotJson = snapshotStore
+    ? await snapshotStore.loadSnapshot()
+    : (database.prepare('SELECT snapshot FROM app_state WHERE id = 1').get() as { snapshot: string } | undefined)
+        ?.snapshot ?? null;
 
-  if (row) {
-    const parsed = JSON.parse(row.snapshot) as Partial<ApiStateSnapshot>;
+  if (snapshotJson) {
+    const parsed = JSON.parse(snapshotJson) as Partial<ApiStateSnapshot>;
     const snapshot: ApiStateSnapshot = normalizeSnapshot(parsed);
     rehydrateState(snapshot);
     return snapshot;

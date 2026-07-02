@@ -7,7 +7,7 @@ This file is the release truth source during the recovery program. A capability 
 | Password authentication | Recovery implementation | Salted scrypt hashes in normalized identity storage; production cutover awaits PostgreSQL | R1 |
 | Staff/customer sessions | Recovery implementation | 256-bit access tokens (hashed at rest) plus persistent rotating refresh tokens with replay detection, device-session listing/revocation, and authenticated password change; refresh tokens survive API restart; full forgot-password reset still awaits R7 email/OTP | R1, R2 |
 | Tenant authorization | Partial | Known branch and document cross-tenant leaks are closed; full policy coverage remains in progress | R1, R3 |
-| Customer OTP | Partial | MSG91-capable; runtime configuration and live provider test required | R0, R2 |
+| Customer OTP | Recovery implementation | MSG91 configured and enabled (health reports otpProvider: msg91); real SMS send/verify not yet exercised end to end with a live handset | R0, R2 |
 | Customer onboarding | Recovery implementation | Public intake creates only an application; no customer, branch, login, or session exists until admin approval. Real document upload still pending (R2.2) | R2 |
 | GST/FSSAI/cheque upload | Recovery implementation | Real byte upload to local object storage with SHA-256 checksum, MIME/size validation, ownership-guarded content download, and admin verify/reject; R2/S3 cloud adapter still pending | R2 |
 | Customer approval | Recovery implementation | Admin approval is the only activation path; commercial terms (tier, credit limit) are admin-set, not applicant-supplied; approval is blocked until all mandatory KYC documents (GST, FSSAI, cheque) are attached and verified, then creates the customer, branch, account user, and login and re-keys the KYC documents. Maker-checker credit approval still pending | R2 |
@@ -34,4 +34,5 @@ This file is the release truth source during the recovery program. A capability 
 | Next.js super-admin | Partial | Broad prototype with dead controls and no automated UI tests | R8 |
 | Root Vite admin/customer demo | Mock | Internal reference only; scheduled for removal after consolidation | R8 |
 | Analytics | Partial | Derived prototype metrics; not finance-certified | R8 |
-| Production deployment | Blocked by design | API refuses production startup until secure PostgreSQL authentication cutover is complete | R1, R9 |
+| Managed PostgreSQL schema | Recovery implementation | Supabase (session pooler + TLS) provisioned; both migrations applied and preflight passes (all required tables + pgcrypto). The running app still uses its local SQLite working store; the Postgres runtime adapter is the remaining R1 cutover work | R1 |
+| Production deployment | Blocked by design | API refuses production startup until the secure PostgreSQL runtime cutover is complete; schema is provisioned but the app does not yet read/write live data from PostgreSQL | R1, R9 |

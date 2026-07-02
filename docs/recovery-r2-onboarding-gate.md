@@ -57,8 +57,29 @@ merely flipped a status string and created nothing.
    it).
 4. OTP identity binding on intake when MSG91 is configured.
 
+## KYC-gated activation addendum (2026-06-29, R2.4)
+
+Batch status: **pass**
+
+Delivered:
+
+- `GET /admin/applications/:id` detail returns the application, its attached
+  documents, and a KYC status summary (missing/unverified/satisfied).
+- `POST /admin/applications/:id/documents` lets an admin attach real KYC
+  document bytes to an application during review (reuses the R2.2 storage
+  adapter), namespaced to the application until activation.
+- Approval is now blocked with 422 unless every mandatory KYC document type
+  (GST, FSSAI, cheque) is attached and verified. On activation the documents
+  are re-keyed onto the new customer.
+
+This closes the R2 exit-gate clause "a customer cannot activate without
+approved KYC". Verified by a new test that walks no-docs (422) ->
+attached-but-unverified (422) -> all-verified (approved), plus updates to the
+existing activation tests to complete KYC first.
+
 ## Gate decision
 
-R2.1 passes locally. Customer activation now has an enforced approval
-boundary with server-controlled terms. Production remains blocked pending the
-R1 managed-PostgreSQL cutover and the remaining R2 document/KYC work.
+R2.1 and R2.4 pass locally. Customer activation now has an enforced approval
+boundary with server-controlled terms and mandatory verified KYC. Production
+remains blocked pending the R1 managed-PostgreSQL cutover and the remaining R2
+cloud-storage work.

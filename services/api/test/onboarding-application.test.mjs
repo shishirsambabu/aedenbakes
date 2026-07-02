@@ -91,6 +91,39 @@ async function decide(token, id, payload) {
   return { status: response.status, body: await response.json() };
 }
 
+const PDF_B64 = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\n%%EOF\n', 'latin1').toString('base64');
+
+async function attachKycDocument(token, applicationId, documentType) {
+  const response = await fetch(`${baseUrl}/admin/applications/${applicationId}/documents`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      documentType,
+      title: `${documentType} document`,
+      fileName: `${documentType}.pdf`,
+      contentBase64: PDF_B64,
+    }),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+async function verifyDocument(token, documentId) {
+  const response = await fetch(`${baseUrl}/documents/${documentId}/verify`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return response.status;
+}
+
+// Attaches and verifies all mandatory KYC documents so the application can be approved.
+async function completeKyc(token, applicationId) {
+  for (const documentType of ['gst', 'fssai', 'cheque']) {
+    const attached = await attachKycDocument(token, applicationId, documentType);
+    assert.equal(attached.status, 201);
+    assert.equal(await verifyDocument(token, attached.body.document.id), 200);
+  }
+}
+
 before(async () => {
   server = spawn(process.execPath, ['dist/server.js'], {
     cwd: new URL('..', import.meta.url),
@@ -146,6 +179,7 @@ test('admin approval activates the customer with admin-set terms, ignoring appli
   const applicationId = body.application.id;
 
   const owner = await loginToken('owner', 'owner123');
+  await completeKyc(owner.token, applicationId);
   const approval = await decide(owner.token, applicationId, {
     decision: 'approve',
     tier: 'Tier B',
@@ -182,6 +216,7 @@ test('approval requires admin-set commercial terms', async () => {
 test('an already-activated application cannot be approved again', async () => {
   const { body } = await submitApplication();
   const owner = await loginToken('owner', 'owner123');
+  await completeKyc(owner.token, body.application.id);
   const first = await decide(owner.token, body.application.id, { decision: 'approve', tier: 'Tier C', creditLimit: 1000 });
   assert.equal(first.status, 201);
   const second = await decide(owner.token, body.application.id, { decision: 'approve', tier: 'Tier C', creditLimit: 1000 });
@@ -221,4 +256,39 @@ test('non-admins cannot view or decide applications', async () => {
     creditLimit: 999999,
   });
   assert.equal(forbiddenDecide.status, 403);
+});
+
+test('activation is blocked until every mandatory KYC document is verified', async () => {
+  const { body } = await submitApplication();
+  const applicationId = body.application.id;
+  const owner = await loginToken('owner', 'owner123');
+
+  // No documents attached yet: approval is refused.
+  const noDocs = await decide(owner.token, applicationId, { decision: 'approve', tier: 'Tier C', creditLimit: 5000 });
+  assert.equal(noDocs.status, 422);
+  assert.deepEqual(noDocs.body.kyc.missing.sort(), ['cheque', 'fssai', 'gst']);
+
+  // Attach the documents but leave them unverified: still refused.
+  const gst = await attachKycDocument(owner.token, applicationId, 'gst');
+  await attachKycDocument(owner.token, applicationId, 'fssai');
+  await attachKycDocument(owner.token, applicationId, 'cheque');
+  const unverified = await decide(owner.token, applicationId, { decision: 'approve', tier: 'Tier C', creditLimit: 5000 });
+  assert.equal(unverified.status, 422);
+  assert.ok(unverified.body.kyc.unverified.includes('gst'));
+
+  // Verify all three: approval now succeeds and re-keys the documents.
+  assert.equal(await verifyDocument(owner.token, gst.body.document.id), 200);
+  const detail = await fetch(`${baseUrl}/admin/applications/${applicationId}`, {
+    headers: { authorization: `Bearer ${owner.token}` },
+  });
+  const detailBody = await detail.json();
+  for (const document of detailBody.documents) {
+    if (document.status !== 'verified') {
+      assert.equal(await verifyDocument(owner.token, document.id), 200);
+    }
+  }
+
+  const approved = await decide(owner.token, applicationId, { decision: 'approve', tier: 'Tier C', creditLimit: 5000 });
+  assert.equal(approved.status, 201);
+  assert.equal(approved.body.application.status, 'approved');
 });

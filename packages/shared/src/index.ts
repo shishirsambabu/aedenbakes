@@ -454,6 +454,7 @@ export interface CustomerDocument {
   uploadedBy?: string;
   rejectionReason?: string;
   updatedAt?: string;
+  applicationId?: string;
 }
 
 export interface InvoiceExport {

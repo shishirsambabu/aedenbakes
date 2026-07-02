@@ -802,6 +802,7 @@ type DocumentRecord = {
   uploadedBy?: string;
   rejectionReason?: string;
   updatedAt?: string;
+  applicationId?: string;
 };
 
 type DocumentAccessLog = {
@@ -2934,6 +2935,14 @@ function activateCustomerFromApplication(
   };
   customerUsers.unshift(accountUser);
 
+  // Re-key KYC documents captured during review onto the activated customer.
+  for (const document of documents) {
+    if (document.applicationId === application.id) {
+      document.customerId = customer.id;
+      document.updatedAt = now;
+    }
+  }
+
   application.activation = {
     customerId: customer.id,
     branchId: primaryBranch.id,
@@ -2946,8 +2955,108 @@ function activateCustomerFromApplication(
   return { customer, branch: primaryBranch, authUser: authRecord, temporaryPassword };
 }
 
+const REQUIRED_KYC_DOCUMENT_TYPES: Array<DocumentRecord['documentType']> = ['gst', 'fssai', 'cheque'];
+
+function documentsForApplication(applicationId: string) {
+  return documents.filter((entry) => entry.applicationId === applicationId);
+}
+
+// Reports which mandatory KYC documents are missing or not yet verified for an
+// application. Approval is blocked until every required type is verified.
+function applicationKycStatus(applicationId: string) {
+  const attached = documentsForApplication(applicationId);
+  const missing: string[] = [];
+  const unverified: string[] = [];
+  for (const type of REQUIRED_KYC_DOCUMENT_TYPES) {
+    const match = attached.find((entry) => entry.documentType === type && entry.contentStored);
+    if (!match) {
+      missing.push(type);
+    } else if (match.status !== 'verified') {
+      unverified.push(type);
+    }
+  }
+  return { missing, unverified, satisfied: missing.length === 0 && unverified.length === 0 };
+}
+
 app.get('/admin/applications', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (_req, res) => {
   res.json({ applications: customerApplications });
+});
+
+app.get('/admin/applications/:id', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const application = customerApplications.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!application) {
+    res.status(404).json({ error: 'Application not found' });
+    return;
+  }
+  res.json({
+    application,
+    documents: documentsForApplication(application.id).map(serializeDocument),
+    kyc: applicationKycStatus(application.id),
+  });
+});
+
+// Admin attaches a KYC document (with real bytes) to an application during
+// review. Stored under the application namespace until activation re-keys it.
+app.post('/admin/applications/:id/documents', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+  const application = customerApplications.find((entry) => entry.id === readRouteParam(req.params.id));
+  if (!application) {
+    res.status(404).json({ error: 'Application not found' });
+    return;
+  }
+
+  const { documentType = 'other', title, fileName, mimeType, contentBase64 } = req.body as {
+    documentType?: DocumentRecord['documentType'];
+    title?: string;
+    fileName?: string;
+    mimeType?: string;
+    contentBase64?: string;
+  };
+  if (!title?.trim() || !fileName?.trim()) {
+    res.status(400).json({ error: 'title and fileName are required' });
+    return;
+  }
+  if (typeof contentBase64 !== 'string' || !contentBase64.trim()) {
+    res.status(400).json({ error: 'contentBase64 is required' });
+    return;
+  }
+
+  const actor = req.session?.user.username ?? 'system';
+  const now = new Date().toISOString();
+  const id = `doc_${crypto.randomUUID()}`;
+  const document: DocumentRecord = {
+    id,
+    // Namespaced to the application until activation assigns the real customer.
+    customerId: `application_${application.id}`,
+    applicationId: application.id,
+    documentType,
+    status: 'draft',
+    title: title.trim(),
+    fileName: fileName.trim(),
+    mimeType: mimeType?.trim() || 'application/octet-stream',
+    downloadUrl: `/documents/${id}/download`,
+    tags: ['application-kyc'],
+    createdAt: now,
+    verifiedAt: null,
+    contentStored: false,
+    originalFileName: fileName.trim(),
+    uploadedBy: actor,
+    updatedAt: now,
+  };
+
+  const stored = persistUploadedDocumentContent(document, contentBase64, mimeType, actor);
+  if (!stored.ok) {
+    res.status(stored.status).json({ error: stored.error });
+    return;
+  }
+
+  documents.unshift(document);
+  recordDocumentAccess(document, req.session?.user.role ?? 'system', 'upload');
+  persistStateSoon();
+  res.status(201).json({
+    document: serializeDocument(document),
+    documents: documentsForApplication(application.id).map(serializeDocument),
+    kyc: applicationKycStatus(application.id),
+  });
 });
 
 app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
@@ -3034,6 +3143,17 @@ app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner'
   );
   if (existingLogin) {
     res.status(409).json({ error: 'A customer login already exists for this applicant loginId' });
+    return;
+  }
+
+  // A customer cannot activate without approved KYC (R2 exit gate). All
+  // required document types must be attached and verified for the application.
+  const kyc = applicationKycStatus(application.id);
+  if (!kyc.satisfied) {
+    res.status(422).json({
+      error: 'Approval requires all mandatory KYC documents to be attached and verified',
+      kyc,
+    });
     return;
   }
 

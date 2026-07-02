@@ -265,3 +265,26 @@ test('production startup fails closed without required configuration', async () 
   assert.notEqual(exitCode, 0);
   assert.match(stderr, /Unsafe production configuration/);
 });
+
+test('production startup rejects a non-PostgreSQL DATABASE_URL', async () => {
+  const child = spawn(process.execPath, ['dist/server.js'], {
+    cwd: new URL('..', import.meta.url),
+    env: isolatedEnvironment({
+      NODE_ENV: 'production',
+      PORT: '43188',
+      DATABASE_URL: './data/local.sqlite',
+      CORS_ORIGINS: 'https://admin.example.com',
+      MSG91_WIDGET_ID: 'widget',
+      MSG91_AUTHKEY: 'authkey',
+    }),
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const exitCode = await new Promise((resolve) => child.once('exit', resolve));
+  assert.notEqual(exitCode, 0);
+  assert.match(stderr, /managed PostgreSQL/);
+});

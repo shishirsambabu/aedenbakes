@@ -24,7 +24,7 @@ import {
   MAX_DOCUMENT_BYTES,
   validateDocumentUpload,
 } from './storage.js';
-import { isPostgresConnectionString, PostgresSnapshotStore, type SnapshotStore } from './durability.js';
+import { isPostgresConnectionString, PostgresStore } from './durability.js';
 import {
   capacities,
   customers,
@@ -122,13 +122,17 @@ function validateRuntimeConfiguration() {
   if (configuredOrigins.length === 0) {
     missing.push('CORS_ORIGINS');
   }
-  if (!process.env.DATABASE_URL?.trim()) {
+  // R1 durable cutover: production must run on managed PostgreSQL so state and
+  // identity survive redeploys. A missing or SQLite/file DATABASE_URL is unsafe.
+  const productionDatabaseUrl = process.env.DATABASE_URL?.trim() ?? '';
+  if (!productionDatabaseUrl) {
     missing.push('DATABASE_URL');
+  } else if (!isPostgresConnectionString(productionDatabaseUrl)) {
+    missing.push('DATABASE_URL must be a managed PostgreSQL connection (Recovery Phase R1)');
   }
   if (!msg91OtpEnabled) {
     missing.push('MSG91_WIDGET_ID and MSG91_AUTHKEY');
   }
-  missing.push('secure authentication migration (Recovery Phase R1)');
 
   if (missing.length > 0) {
     throw new Error(`Unsafe production configuration. Missing: ${missing.join(', ')}`);
@@ -949,8 +953,8 @@ const documentStorage = new LocalObjectStorage(uploadStorageRoot);
 // persisted there so it survives redeploys on ephemeral-disk hosts. Otherwise
 // the local SQLite file remains the snapshot store (development and tests).
 const rawDatabaseUrl = process.env.DATABASE_URL?.trim() ?? '';
-const snapshotStore: SnapshotStore | null = isPostgresConnectionString(rawDatabaseUrl)
-  ? new PostgresSnapshotStore(rawDatabaseUrl)
+const pgStore: PostgresStore | null = isPostgresConnectionString(rawDatabaseUrl)
+  ? new PostgresStore(rawDatabaseUrl)
   : null;
 database.exec(`
   CREATE TABLE IF NOT EXISTS app_state (
@@ -1553,8 +1557,8 @@ let erpSyncStatus: ErpSyncStatus = {
   pendingCount: 1,
   failedCount: 0,
 };
-if (snapshotStore) {
-  await snapshotStore.init();
+if (pgStore) {
+  await pgStore.init();
 }
 await loadState();
 const migratedLegacyPasswords = [...authUsers, ...customerAuthRecords].some((record) => Boolean(record.password));
@@ -1564,7 +1568,7 @@ for (const record of [...authUsers, ...customerAuthRecords]) {
 if (migratedLegacyPasswords) {
   recordMigration('legacy-passwords-to-scrypt');
 }
-loadOrMigrateAuthPrincipals();
+await loadOrMigrateAuthPrincipals();
 if (!vasyConfigured) {
   erpSyncStatus.state = 'down';
   erpSyncStatus.lastSuccessAt = null;
@@ -1703,52 +1707,73 @@ function sessionContextFromRequest(req: express.Request): SessionContext {
   };
 }
 
-function getRefreshSessionRow(sessionId: string) {
+async function getRefreshSessionRow(sessionId: string): Promise<RefreshSessionRow | undefined> {
+  if (pgStore) {
+    return (await pgStore.getRefreshSession(sessionId)) ?? undefined;
+  }
   return database
     .prepare('SELECT * FROM auth_refresh_sessions WHERE id = ?')
     .get(sessionId) as RefreshSessionRow | undefined;
 }
 
-// Creates a persistent device session whose refresh token survives API restarts.
-// Only token hashes are stored at rest.
-function createRefreshSession(user: SessionUser, context: SessionContext) {
+// Creates a persistent device session whose refresh token survives API restarts
+// (and redeploys, when backed by PostgreSQL). Only token hashes are stored.
+async function createRefreshSession(user: SessionUser, context: SessionContext) {
   const sessionId = `rsess_${crypto.randomUUID()}`;
   const refreshToken = generateRefreshToken(sessionId);
   const now = new Date();
   const refreshExpiresAt = new Date(now.getTime() + REFRESH_SESSION_TTL_MS).toISOString();
-  database
-    .prepare(
-      `
+  const row: RefreshSessionRow = {
+    id: sessionId,
+    user_id: user.id,
+    refresh_token_hash: hashSessionToken(refreshToken),
+    previous_token_hash: null,
+    user_json: JSON.stringify(user),
+    device_label: context.deviceLabel,
+    user_agent: context.userAgent,
+    ip: context.ip,
+    created_at: now.toISOString(),
+    last_used_at: now.toISOString(),
+    expires_at: refreshExpiresAt,
+    revoked_at: null,
+  };
+  if (pgStore) {
+    await pgStore.insertRefreshSession(row);
+  } else {
+    database
+      .prepare(
+        `
       INSERT INTO auth_refresh_sessions (
         id, user_id, refresh_token_hash, previous_token_hash, user_json,
         device_label, user_agent, ip, created_at, last_used_at, expires_at, revoked_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       `,
-    )
-    .run(
-      sessionId,
-      user.id,
-      hashSessionToken(refreshToken),
-      null,
-      JSON.stringify(user),
-      context.deviceLabel,
-      context.userAgent,
-      context.ip,
-      now.toISOString(),
-      now.toISOString(),
-      refreshExpiresAt,
-    );
+      )
+      .run(
+        row.id,
+        row.user_id,
+        row.refresh_token_hash,
+        row.previous_token_hash,
+        row.user_json,
+        row.device_label,
+        row.user_agent,
+        row.ip,
+        row.created_at,
+        row.last_used_at,
+        row.expires_at,
+      );
+  }
   return { sessionId, refreshToken, refreshExpiresAt };
 }
 
 // Validates a presented refresh token, detects replay of an already-rotated
 // token, and rotates to a fresh refresh token on success.
-function rotateRefreshSession(presentedToken: string, context: SessionContext): RefreshRotationResult {
+async function rotateRefreshSession(presentedToken: string, context: SessionContext): Promise<RefreshRotationResult> {
   const sessionId = parseRefreshTokenSessionId(presentedToken);
   if (!sessionId) {
     return { ok: false, reason: 'invalid' };
   }
-  const row = getRefreshSessionRow(sessionId);
+  const row = await getRefreshSessionRow(sessionId);
   if (!row) {
     return { ok: false, reason: 'invalid' };
   }
@@ -1760,7 +1785,7 @@ function rotateRefreshSession(presentedToken: string, context: SessionContext): 
   if (row.previous_token_hash && timingSafeEqualHex(presentedHash, row.previous_token_hash)) {
     // A token we already rotated away from is being replayed: treat the whole
     // device session as compromised.
-    revokeRefreshSession(sessionId, 'token_reuse_detected', 'system', 'auth_token_reuse_detected');
+    await revokeRefreshSession(sessionId, 'token_reuse_detected', 'system', 'auth_token_reuse_detected');
     return { ok: false, reason: 'reuse' };
   }
   if (!timingSafeEqualHex(presentedHash, row.refresh_token_hash)) {
@@ -1773,22 +1798,21 @@ function rotateRefreshSession(presentedToken: string, context: SessionContext): 
   const user = JSON.parse(row.user_json) as SessionUser;
   const rotatedToken = generateRefreshToken(sessionId);
   const now = new Date().toISOString();
-  database
-    .prepare(
-      `
+  const nextUserAgent = context.userAgent ?? row.user_agent;
+  const nextIp = context.ip ?? row.ip;
+  if (pgStore) {
+    await pgStore.rotateRefreshSession(sessionId, row.refresh_token_hash, hashSessionToken(rotatedToken), now, nextUserAgent, nextIp);
+  } else {
+    database
+      .prepare(
+        `
       UPDATE auth_refresh_sessions
       SET previous_token_hash = ?, refresh_token_hash = ?, last_used_at = ?, user_agent = ?, ip = ?
       WHERE id = ?
       `,
-    )
-    .run(
-      row.refresh_token_hash,
-      hashSessionToken(rotatedToken),
-      now,
-      context.userAgent ?? row.user_agent,
-      context.ip ?? row.ip,
-      sessionId,
-    );
+      )
+      .run(row.refresh_token_hash, hashSessionToken(rotatedToken), now, nextUserAgent, nextIp, sessionId);
+  }
   return {
     ok: true,
     user,
@@ -1799,7 +1823,8 @@ function rotateRefreshSession(presentedToken: string, context: SessionContext): 
 }
 
 // Drops any in-memory access tokens bound to a device session so revocation
-// takes effect immediately, not just at next access-token expiry.
+// takes effect immediately, not just at next access-token expiry. Access
+// tokens are always local (they expire on restart), so this stays synchronous.
 function dropAccessTokensForSession(sessionId: string) {
   for (const [token, session] of sessions) {
     if (session.sessionId === sessionId) {
@@ -1809,18 +1834,25 @@ function dropAccessTokensForSession(sessionId: string) {
   }
 }
 
-function revokeRefreshSession(
+async function revokeRefreshSession(
   sessionId: string,
   reason: string,
   actor = 'system',
   auditKind: 'auth_session_revoked' | 'auth_token_reuse_detected' = 'auth_session_revoked',
 ) {
   const now = new Date().toISOString();
-  const result = database
-    .prepare('UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-    .run(now, sessionId);
+  let changed: number;
+  if (pgStore) {
+    changed = await pgStore.markRefreshSessionRevoked(sessionId, now);
+  } else {
+    changed = Number(
+      database
+        .prepare('UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+        .run(now, sessionId).changes,
+    );
+  }
   dropAccessTokensForSession(sessionId);
-  if (result.changes > 0) {
+  if (changed > 0) {
     recordAudit({
       kind: auditKind,
       actor,
@@ -1828,31 +1860,40 @@ function revokeRefreshSession(
       referenceId: sessionId,
     });
   }
-  return result.changes > 0;
+  return changed > 0;
 }
 
-function revokeAllRefreshSessionsForUser(userId: string, options: { exceptSessionId?: string; reason: string; actor: string }) {
-  const rows = database
-    .prepare('SELECT id FROM auth_refresh_sessions WHERE user_id = ? AND revoked_at IS NULL')
-    .all(userId) as Array<{ id: string }>;
+async function revokeAllRefreshSessionsForUser(
+  userId: string,
+  options: { exceptSessionId?: string; reason: string; actor: string },
+) {
+  const ids = pgStore
+    ? (await pgStore.listActiveRefreshSessions(userId)).map((row) => row.id)
+    : (
+        database
+          .prepare('SELECT id FROM auth_refresh_sessions WHERE user_id = ? AND revoked_at IS NULL')
+          .all(userId) as Array<{ id: string }>
+      ).map((row) => row.id);
   let revoked = 0;
-  for (const row of rows) {
-    if (row.id === options.exceptSessionId) {
+  for (const id of ids) {
+    if (id === options.exceptSessionId) {
       continue;
     }
-    if (revokeRefreshSession(row.id, options.reason, options.actor)) {
+    if (await revokeRefreshSession(id, options.reason, options.actor)) {
       revoked += 1;
     }
   }
   return revoked;
 }
 
-function listRefreshSessionsForUser(userId: string, currentSessionId?: string) {
-  const rows = database
-    .prepare(
-      'SELECT * FROM auth_refresh_sessions WHERE user_id = ? AND revoked_at IS NULL ORDER BY last_used_at DESC',
-    )
-    .all(userId) as RefreshSessionRow[];
+async function listRefreshSessionsForUser(userId: string, currentSessionId?: string) {
+  const rows = pgStore
+    ? await pgStore.listActiveRefreshSessions(userId)
+    : (database
+        .prepare(
+          'SELECT * FROM auth_refresh_sessions WHERE user_id = ? AND revoked_at IS NULL ORDER BY last_used_at DESC',
+        )
+        .all(userId) as RefreshSessionRow[]);
   const now = Date.now();
   return rows
     .filter((row) => new Date(row.expires_at).getTime() > now)
@@ -1906,7 +1947,7 @@ app.get('/health', (_req, res) => {
   });
 });
 
-app.post('/auth/login', (req, res) => {
+app.post('/auth/login', async (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || !password) {
@@ -1937,14 +1978,14 @@ app.post('/auth/login', (req, res) => {
   loginAttempts.delete(attemptKey);
 
   const sessionUser = toSessionUser(record);
-  const device = createRefreshSession(sessionUser, sessionContextFromRequest(req));
+  const device = await createRefreshSession(sessionUser, sessionContextFromRequest(req));
   const session = issueSession(sessionUser, device.sessionId);
   persistStateSoon();
 
   res.json(buildAuthPayload(session, device));
 });
 
-app.post('/auth/logout', authenticate, (req, res) => {
+app.post('/auth/logout', authenticate, async (req, res) => {
   const token = getToken(req);
   const sessionId = req.session?.sessionId;
   if (token) {
@@ -1952,7 +1993,7 @@ app.post('/auth/logout', authenticate, (req, res) => {
     database.prepare('DELETE FROM auth_sessions WHERE token = ?').run(hashSessionToken(token));
   }
   if (sessionId) {
-    revokeRefreshSession(sessionId, 'logout', req.session!.user.username);
+    await revokeRefreshSession(sessionId, 'logout', req.session!.user.username);
   }
   persistStateSoon();
 
@@ -1976,14 +2017,14 @@ app.get('/auth/me', authenticate, (req, res) => {
 
 // Exchanges a valid refresh token for a fresh access token, rotating the
 // refresh token. Works after an API restart because refresh sessions persist.
-app.post('/auth/refresh', (req, res) => {
+app.post('/auth/refresh', async (req, res) => {
   const { refreshToken } = req.body as { refreshToken?: string };
   if (!refreshToken || typeof refreshToken !== 'string') {
     res.status(400).json({ error: 'refreshToken is required' });
     return;
   }
 
-  const result = rotateRefreshSession(refreshToken, sessionContextFromRequest(req));
+  const result = await rotateRefreshSession(refreshToken, sessionContextFromRequest(req));
   if (!result.ok) {
     if (result.reason === 'reuse') {
       res.status(401).json({ error: 'Refresh token reuse detected; session revoked', code: 'REFRESH_TOKEN_REUSE' });
@@ -2005,40 +2046,40 @@ app.post('/auth/refresh', (req, res) => {
 });
 
 // Lists the signed-in user's active device sessions.
-app.get('/auth/sessions', authenticate, (req, res) => {
+app.get('/auth/sessions', authenticate, async (req, res) => {
   const session = req.session!;
-  res.json({ sessions: listRefreshSessionsForUser(session.user.id, session.sessionId) });
+  res.json({ sessions: await listRefreshSessionsForUser(session.user.id, session.sessionId) });
 });
 
 // Revokes a single device session owned by the signed-in user.
-app.delete('/auth/sessions/:id', authenticate, (req, res) => {
+app.delete('/auth/sessions/:id', authenticate, async (req, res) => {
   const session = req.session!;
   const targetId = readRouteParam(req.params.id);
-  const row = getRefreshSessionRow(targetId);
+  const row = await getRefreshSessionRow(targetId);
   if (!row || row.user_id !== session.user.id || row.revoked_at) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-  revokeRefreshSession(targetId, 'user_revoked', session.user.username);
+  await revokeRefreshSession(targetId, 'user_revoked', session.user.username);
   persistStateSoon();
-  res.json({ ok: true, sessions: listRefreshSessionsForUser(session.user.id, session.sessionId) });
+  res.json({ ok: true, sessions: await listRefreshSessionsForUser(session.user.id, session.sessionId) });
 });
 
 // Revokes every other device session, keeping the current one active.
-app.post('/auth/sessions/revoke-all', authenticate, (req, res) => {
+app.post('/auth/sessions/revoke-all', authenticate, async (req, res) => {
   const session = req.session!;
-  const revoked = revokeAllRefreshSessionsForUser(session.user.id, {
+  const revoked = await revokeAllRefreshSessionsForUser(session.user.id, {
     exceptSessionId: session.sessionId,
     reason: 'user_revoked_all',
     actor: session.user.username,
   });
   persistStateSoon();
-  res.json({ ok: true, revoked, sessions: listRefreshSessionsForUser(session.user.id, session.sessionId) });
+  res.json({ ok: true, revoked, sessions: await listRefreshSessionsForUser(session.user.id, session.sessionId) });
 });
 
 // Authenticated self-service password change. Requires the current password,
 // rehashes the new one, and revokes every other device session.
-app.post('/auth/password', authenticate, (req, res) => {
+app.post('/auth/password', authenticate, async (req, res) => {
   const session = req.session!;
   const { currentPassword, newPassword } = req.body as {
     currentPassword?: string;
@@ -2066,9 +2107,9 @@ app.post('/auth/password', authenticate, (req, res) => {
 
   record.passwordHash = hashPassword(newPassword);
   record.updatedAt = new Date().toISOString();
-  persistAuthPrincipal(record);
+  await persistAuthPrincipal(record);
 
-  const revoked = revokeAllRefreshSessionsForUser(session.user.id, {
+  const revoked = await revokeAllRefreshSessionsForUser(session.user.id, {
     exceptSessionId: session.sessionId,
     reason: 'password_changed',
     actor: session.user.username,
@@ -2394,7 +2435,7 @@ app.post('/customer/onboard', async (req, res) => {
     deliveryZone,
   };
   customerAuthRecords.unshift(authRecord);
-  persistAuthPrincipal(authRecord);
+  await persistAuthPrincipal(authRecord);
 
   const branchNow = new Date().toISOString();
   const primaryBranch: CustomerBranch = {
@@ -2441,7 +2482,7 @@ app.post('/customer/onboard', async (req, res) => {
   }
 
   const onboardingSessionUser = toSessionUser(authRecord);
-  const onboardingDevice = createRefreshSession(onboardingSessionUser, sessionContextFromRequest(req));
+  const onboardingDevice = await createRefreshSession(onboardingSessionUser, sessionContextFromRequest(req));
   const session = issueSession(onboardingSessionUser, onboardingDevice.sessionId);
   recordAudit({
     kind: 'customer_onboarded',
@@ -2880,7 +2921,7 @@ app.post('/admin/products/:id/publish', authenticate, requireAnyRole(['owner', '
 // Activates an approved application: creates the customer, primary branch,
 // account user, and customer login. Commercial terms come from the admin
 // decision, never from the applicant. Returns the issued credentials.
-function activateCustomerFromApplication(
+async function activateCustomerFromApplication(
   application: CustomerApplicationRecord,
   terms: { tier: string; creditLimit: number; actor: string },
 ) {
@@ -2919,7 +2960,7 @@ function activateCustomerFromApplication(
     deliveryZone,
   };
   customerAuthRecords.unshift(authRecord);
-  persistAuthPrincipal(authRecord);
+  await persistAuthPrincipal(authRecord);
 
   const primaryBranch: CustomerBranch = {
     id: `branch_${customer.id}_main`,
@@ -3071,7 +3112,7 @@ app.post('/admin/applications/:id/documents', authenticate, requireAnyRole(['own
   });
 });
 
-app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), (req, res) => {
+app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner', 'manager', 'accounts', 'support']), async (req, res) => {
   const application = customerApplications.find((entry) => entry.id === readRouteParam(req.params.id));
   if (!application) {
     res.status(404).json({ error: 'Application not found' });
@@ -3169,7 +3210,7 @@ app.post('/admin/applications/:id/decide', authenticate, requireAnyRole(['owner'
     return;
   }
 
-  const activation = activateCustomerFromApplication(application, { tier, creditLimit, actor });
+  const activation = await activateCustomerFromApplication(application, { tier, creditLimit, actor });
   application.status = 'approved';
   application.note = `${application.businessName} approved and activated by ${actor}.`;
   recordAudit({
@@ -6973,7 +7014,7 @@ function recordMigration(migrationName: string, source = 'sqlite') {
     .run(migrationName, source, new Date().toISOString());
 }
 
-function persistAuthPrincipal(record: AuthRecord) {
+async function persistAuthPrincipal(record: AuthRecord) {
   const now = new Date().toISOString();
   const profile = {
     loginId: record.loginId,
@@ -6981,6 +7022,22 @@ function persistAuthPrincipal(record: AuthRecord) {
     defaultAddress: record.defaultAddress,
     deliveryZone: record.deliveryZone,
   };
+  const principal = {
+    id: record.id,
+    username: record.username,
+    display_name: record.displayName,
+    role: record.role,
+    password_hash: record.passwordHash,
+    customer_id: record.customerId ?? null,
+    active: record.active === false ? 0 : 1,
+    profile_json: JSON.stringify(profile),
+    created_at: record.createdAt ?? now,
+    updated_at: record.updatedAt ?? now,
+  };
+  if (pgStore) {
+    await pgStore.upsertPrincipal(principal);
+    return;
+  }
   database
     .prepare(
       `
@@ -6999,21 +7056,25 @@ function persistAuthPrincipal(record: AuthRecord) {
       `,
     )
     .run(
-      record.id,
-      record.username,
-      record.displayName,
-      record.role,
-      record.passwordHash,
-      record.customerId ?? null,
-      record.active === false ? 0 : 1,
-      JSON.stringify(profile),
-      record.createdAt ?? now,
-      record.updatedAt ?? now,
+      principal.id,
+      principal.username,
+      principal.display_name,
+      principal.role,
+      principal.password_hash,
+      principal.customer_id,
+      principal.active,
+      principal.profile_json,
+      principal.created_at,
+      principal.updated_at,
     );
 }
 
-function loadOrMigrateAuthPrincipals() {
-  const rows = database.prepare('SELECT * FROM auth_principals ORDER BY created_at').all() as Array<{
+async function loadOrMigrateAuthPrincipals() {
+  const rows = (
+    pgStore
+      ? await pgStore.listPrincipals()
+      : database.prepare('SELECT * FROM auth_principals ORDER BY created_at').all()
+  ) as Array<{
     id: string;
     username: string;
     display_name: string;
@@ -7028,7 +7089,7 @@ function loadOrMigrateAuthPrincipals() {
 
   if (rows.length === 0) {
     for (const record of [...authUsers, ...customerAuthRecords]) {
-      persistAuthPrincipal(record);
+      await persistAuthPrincipal(record);
     }
     recordMigration('auth-principals-normalized');
     return;
@@ -7125,8 +7186,8 @@ async function persistState() {
   };
 
   const snapshotJson = JSON.stringify(snapshot);
-  if (snapshotStore) {
-    await snapshotStore.saveSnapshot(snapshotJson);
+  if (pgStore) {
+    await pgStore.saveSnapshot(snapshotJson);
   } else {
     database
       .prepare(
@@ -7155,8 +7216,8 @@ async function persistState() {
 }
 
 async function loadState(): Promise<ApiStateSnapshot> {
-  const snapshotJson = snapshotStore
-    ? await snapshotStore.loadSnapshot()
+  const snapshotJson = pgStore
+    ? await pgStore.loadSnapshot()
     : (database.prepare('SELECT snapshot FROM app_state WHERE id = 1').get() as { snapshot: string } | undefined)
         ?.snapshot ?? null;
 

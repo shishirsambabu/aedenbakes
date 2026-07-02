@@ -69,6 +69,40 @@ Verification:
 - API build: pass. API tests: 30 pass, 0 fail (7 new).
 - New tests cover rotation, refresh-token replay revocation, single/all device revocation, refresh survival across a real kill-and-respawn restart, and password-change validation plus session revocation.
 
+## PostgreSQL runtime cutover addendum (2026-07-02, batches A1 + A2)
+
+Batch status: **pass**
+
+Delivered:
+
+- `src/durability.ts`: `PostgresStore` (single pooled, TLS-enabled store) owning
+  the state snapshot plus the durable identity tables (`auth_principals`,
+  `auth_refresh_sessions`), selected by DATABASE_URL scheme.
+- The application-state snapshot (A1) and auth principals + refresh sessions
+  (A2) now persist to and load from managed PostgreSQL when DATABASE_URL is
+  postgres, so business data and logins survive redeploys on ephemeral-disk
+  hosts. Access tokens remain local and expire on restart by design.
+- Auth/session/principal persistence functions converted to async with a
+  PostgreSQL branch and a preserved SQLite branch (development and tests).
+- Production fail-closed guard updated: instead of an unconditional block, it
+  now requires a managed PostgreSQL DATABASE_URL (plus CORS and MSG91). A
+  missing or SQLite/file DATABASE_URL is still rejected in production.
+
+Verification:
+
+- API build: pass. Tests: 53 pass, 1 skipped (54 total). The skipped test is a
+  live PostgreSQL round-trip that runs only when TEST_DATABASE_URL is set.
+- Live verification against the Supabase database (via TEST_DATABASE_URL)
+  round-trips the snapshot, principal upsert/list, and refresh-session
+  insert/rotate/revoke/list-active, then cleans up its fake rows.
+- New runtime test asserts production rejects a non-PostgreSQL DATABASE_URL.
+
+Remaining before a production pilot: centralized authorization coverage
+(R1.5), backup/restore/rollback demonstration, and the normalized-table
+rewrite that replaces the single-row snapshot for multi-instance safety.
+
 ## Gate decision
 
-Local recovery development can continue. Production remains intentionally blocked until the remaining R1 database work (managed PostgreSQL adapter and data cutover) passes its own gate.
+The R1 secure data and identity cutover is complete on managed PostgreSQL.
+Production can boot with a managed PostgreSQL DATABASE_URL; full production
+certification (load, backup/restore, authorization coverage) remains R9.

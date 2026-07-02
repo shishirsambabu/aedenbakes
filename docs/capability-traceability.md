@@ -13,7 +13,7 @@ This file is the release truth source during the recovery program. A capability 
 | GST/FSSAI/cheque upload | Recovery implementation | Real byte upload to local object storage with SHA-256 checksum, MIME/size validation, ownership-guarded content download, and admin verify/reject; R2/S3 cloud adapter still pending | R2 |
 | Customer approval | Recovery implementation | Admin approval is the only activation path; commercial terms (tier, credit limit) are admin-set, not applicant-supplied; approval is blocked until all mandatory KYC documents (GST, FSSAI, cheque) are attached and verified, then creates the customer, branch, account user, and login and re-keys the KYC documents. Maker-checker credit approval still pending | R2 |
 | Customer session restore | Absent | Session is not retained after relaunch | R2 |
-| Branch management | Partial | Branch records exist; approval and tenant guards are incomplete | R3 |
+| Branch management | Recovery implementation | Customer-requested branches start pending_approval and cannot be ordered against; staff drive a guarded approval/suspension state machine (pending -> active -> paused/service_hold/closed) with role and tenant guards. Branch-level GST/PO settings still pending | R3 |
 | Customer roles/approvals | Partial | Role records exist; end-to-end enforcement is incomplete | R3 |
 | Catalog and pricing | Partial | Prototype catalog with server data; commercial rules need hardening | R3 |
 | Cart and checkout | Partial | Order request only; no payment settlement | R4 |

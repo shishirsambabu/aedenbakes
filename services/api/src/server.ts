@@ -3327,14 +3327,108 @@ app.post('/customers/:id/branches', authenticate, requireAnyRole(['owner', 'mana
   };
   customerBranches.unshift(branch);
   recordAudit({
-    kind: 'customer_onboarded',
+    kind: 'branch_status_changed',
     actor: req.session?.user.username ?? 'system',
-    summary: `Created branch ${branch.code} for ${customer.id}.`,
+    summary: `Created branch ${branch.code} for ${customer.id} as ${branch.status}.`,
     referenceId: branch.id,
   });
   persistStateSoon();
 
   res.status(201).json({ branch, branches: customerBranches.filter((entry) => entry.customerId === customer.id) });
+});
+
+// Valid branch lifecycle transitions. New branches requested by a customer
+// start pending_approval and only serve orders once an admin activates them.
+const BRANCH_TRANSITIONS: Record<CustomerBranch['status'], CustomerBranch['status'][]> = {
+  pending_approval: ['active', 'closed'],
+  active: ['paused', 'service_hold', 'closed'],
+  paused: ['active', 'closed'],
+  service_hold: ['active', 'closed'],
+  closed: [],
+};
+
+// Customers can request a new branch for their own account. It is created in
+// pending_approval and cannot be used for ordering until an admin activates it.
+app.post('/customer/branches', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  const body = req.body as { name?: string; code?: string; serviceZone?: string; deliveryNotes?: string };
+  const name = body.name?.trim();
+  const code = body.code?.trim().toUpperCase();
+  const serviceZone = body.serviceZone?.trim();
+  if (!name || !code || !serviceZone) {
+    res.status(400).json({ error: 'name, code, and serviceZone are required' });
+    return;
+  }
+  if (customerBranches.some((entry) => entry.customerId === customerId && entry.code === code)) {
+    res.status(409).json({ error: 'A branch with this code already exists for the customer' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const branch: CustomerBranch = {
+    id: `branch_${crypto.randomUUID().slice(0, 8)}`,
+    customerId,
+    name,
+    code,
+    status: 'pending_approval',
+    serviceZone,
+    deliveryNotes: body.deliveryNotes?.trim() || undefined,
+    createdAt: now,
+    updatedAt: now,
+  };
+  customerBranches.unshift(branch);
+  recordAudit({
+    kind: 'branch_requested',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Requested branch ${branch.code} for ${customerId} (pending approval).`,
+    referenceId: branch.id,
+  });
+  persistStateSoon();
+  res.status(201).json({ branch, branches: customerBranches.filter((entry) => entry.customerId === customerId) });
+});
+
+// Staff drive the branch approval/suspension state machine.
+app.post('/branches/:branchId/transition', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
+  const branchId = readRouteParam(req.params.branchId);
+  const branch = customerBranches.find((entry) => entry.id === branchId);
+  if (!branch) {
+    res.status(404).json({ error: 'Branch not found' });
+    return;
+  }
+
+  const { status, reason } = req.body as { status?: CustomerBranch['status']; reason?: string };
+  if (!status || !(status in BRANCH_TRANSITIONS)) {
+    res.status(400).json({ error: 'A valid target status is required' });
+    return;
+  }
+  if (status === branch.status) {
+    res.status(409).json({ error: `Branch is already ${status}` });
+    return;
+  }
+  if (!BRANCH_TRANSITIONS[branch.status].includes(status)) {
+    res.status(409).json({
+      error: `Cannot transition branch from ${branch.status} to ${status}`,
+      allowed: BRANCH_TRANSITIONS[branch.status],
+    });
+    return;
+  }
+
+  const from = branch.status;
+  branch.status = status;
+  branch.updatedAt = new Date().toISOString();
+  recordAudit({
+    kind: 'branch_status_changed',
+    actor: req.session?.user.username ?? 'system',
+    summary: `Branch ${branch.code} moved ${from} -> ${status}${reason ? ` (${reason})` : ''}.`,
+    referenceId: branch.id,
+  });
+  persistStateSoon();
+  res.json({ branch, branches: customerBranches.filter((entry) => entry.customerId === branch.customerId) });
 });
 
 app.get('/customers/:id/users', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {

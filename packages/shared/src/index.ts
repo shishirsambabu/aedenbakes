@@ -37,7 +37,7 @@ export interface CustomerBranch {
   customerId: string;
   name: string;
   code: string;
-  status: 'active' | 'paused' | 'service_hold' | 'closed';
+  status: 'pending_approval' | 'active' | 'paused' | 'service_hold' | 'closed';
   serviceZone: string;
   deliveryNotes?: string;
   createdAt: string;
@@ -225,6 +225,8 @@ export interface AuditEvent {
     | 'auth_password_changed'
     | 'auth_session_revoked'
     | 'auth_token_reuse_detected'
+    | 'branch_requested'
+    | 'branch_status_changed'
     | 'customer_onboarded'
     | 'customer_order_placed'
     | 'customer_order_rejected';

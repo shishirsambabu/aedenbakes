@@ -38,6 +38,13 @@ services:
         value: "false"
       - key: EXPOSE_OTP_DEBUG_CODE
         value: "false"
+      # First-boot administrator for a fresh production database (no demo
+      # accounts are seeded). Set both in the dashboard; used only when the
+      # principal store is empty. Password must be at least 8 characters.
+      - key: BOOTSTRAP_OWNER_USERNAME
+        sync: false
+      - key: BOOTSTRAP_OWNER_PASSWORD
+        sync: false
       # Optional integrations — leave unset until activated, then add in the
       # dashboard (the app stays honest and reports them as not configured):
       #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME

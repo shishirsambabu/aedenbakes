@@ -83,6 +83,7 @@ const allowedOrigins =
     ? configuredOrigins
     : ['http://127.0.0.1:3000', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://localhost:5173'];
 const allowDemoAccounts = !isProduction && process.env.ENABLE_DEMO_ACCOUNTS !== 'false';
+const MIN_PASSWORD_LENGTH = 8;
 const exposeOtpDebugCode = !isProduction && process.env.EXPOSE_OTP_DEBUG_CODE === 'true';
 const allowPrototypeOnboarding = !isProduction && process.env.ENABLE_PROTOTYPE_ONBOARDING === 'true';
 const msg91WidgetId = process.env.MSG91_WIDGET_ID?.trim() ?? '';
@@ -909,38 +910,42 @@ const authUsers: AuthRecord[] = allowDemoAccounts
   : [];
 const dummyPasswordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
 
-let customerAuthRecords: AuthRecord[] = [
-  {
-    id: 'cust_auth_cafe_nook',
-    username: '9000000001',
-    loginId: '9000000001',
-    displayName: 'Cafe Nook',
-    role: 'customer',
-    passwordHash: hashPassword('nook123'),
-    customerId: 'cust_cafe_nook',
-    active: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    phone: '9000000001',
-    defaultAddress: 'Cafe Nook, North Industrial Estate',
-    deliveryZone: 'North',
-  },
-  {
-    id: 'cust_auth_hotel_lotus',
-    username: '9000000002',
-    loginId: '9000000002',
-    displayName: 'Hotel Lotus',
-    role: 'customer',
-    passwordHash: hashPassword('lotus123'),
-    customerId: 'cust_hotel_lotus',
-    active: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    phone: '9000000002',
-    defaultAddress: 'Hotel Lotus, Central Market Road',
-    deliveryZone: 'Central',
-  },
-];
+// Demo customer logins carry hardcoded passwords, so they must never be seeded
+// in production. Gated behind the same flag as demo staff accounts.
+let customerAuthRecords: AuthRecord[] = allowDemoAccounts
+  ? [
+      {
+        id: 'cust_auth_cafe_nook',
+        username: '9000000001',
+        loginId: '9000000001',
+        displayName: 'Cafe Nook',
+        role: 'customer',
+        passwordHash: hashPassword('nook123'),
+        customerId: 'cust_cafe_nook',
+        active: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        phone: '9000000001',
+        defaultAddress: 'Cafe Nook, North Industrial Estate',
+        deliveryZone: 'North',
+      },
+      {
+        id: 'cust_auth_hotel_lotus',
+        username: '9000000002',
+        loginId: '9000000002',
+        displayName: 'Hotel Lotus',
+        role: 'customer',
+        passwordHash: hashPassword('lotus123'),
+        customerId: 'cust_hotel_lotus',
+        active: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        phone: '9000000002',
+        defaultAddress: 'Hotel Lotus, Central Market Road',
+        deliveryZone: 'Central',
+      },
+    ]
+  : [];
 
 const stateFilePath = join(process.cwd(), 'data', 'api-state.json');
 const databasePath = resolveDatabasePath(process.env.DATABASE_URL ?? '');
@@ -1656,7 +1661,6 @@ function toSessionUser(record: AuthRecord): SessionUser {
 
 const ACCESS_SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const REFRESH_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
-const MIN_PASSWORD_LENGTH = 8;
 
 function issueSession(user: SessionUser, sessionId?: string) {
   const token = generateSessionToken();
@@ -7014,6 +7018,36 @@ function recordMigration(migrationName: string, source = 'sqlite') {
     .run(migrationName, source, new Date().toISOString());
 }
 
+// Seeds a single owner from env on first boot when demo accounts are disabled,
+// so a fresh production database has exactly one administrator to sign in with
+// (no hardcoded credentials). Only used when the principal store is empty.
+function bootstrapAuthRecords(): AuthRecord[] {
+  if (allowDemoAccounts) {
+    return [];
+  }
+  const username = process.env.BOOTSTRAP_OWNER_USERNAME?.trim();
+  const password = process.env.BOOTSTRAP_OWNER_PASSWORD?.trim();
+  if (!username || !password) {
+    return [];
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(`BOOTSTRAP_OWNER_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters`);
+  }
+  const now = new Date().toISOString();
+  return [
+    {
+      id: 'staff_bootstrap_owner',
+      username,
+      displayName: 'Bootstrap Owner',
+      role: 'owner',
+      passwordHash: hashPassword(password),
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
 async function persistAuthPrincipal(record: AuthRecord) {
   const now = new Date().toISOString();
   const profile = {
@@ -7088,6 +7122,9 @@ async function loadOrMigrateAuthPrincipals() {
   }>;
 
   if (rows.length === 0) {
+    // Make the bootstrap owner usable in this same process, not just after the
+    // next restart, by adding it to the in-memory login set before persisting.
+    authUsers.push(...bootstrapAuthRecords());
     for (const record of [...authUsers, ...customerAuthRecords]) {
       await persistAuthPrincipal(record);
     }
@@ -7119,7 +7156,10 @@ async function loadOrMigrateAuthPrincipals() {
     };
   });
 
-  authUsers.splice(0, authUsers.length, ...records.filter((record) => record.role !== 'customer' && allowDemoAccounts));
+  // Load every persisted principal. Seed gating happens at seed time (demo
+  // accounts are empty in production), so principals already in the store are
+  // legitimate and must be loaded regardless of the demo flag.
+  authUsers.splice(0, authUsers.length, ...records.filter((record) => record.role !== 'customer'));
   customerAuthRecords.splice(0, customerAuthRecords.length, ...records.filter((record) => record.role === 'customer'));
 }
 

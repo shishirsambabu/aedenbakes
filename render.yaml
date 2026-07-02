@@ -1,3 +1,12 @@
+# Render blueprint for the Aeden Bakes API.
+#
+# NOTE ON PRODUCTION BOOT: the API intentionally fails closed in production
+# (NODE_ENV=production) until the Recovery Phase R1 runtime cutover is complete
+# — see assertSecureConfiguration in services/api/src/server.ts. Wiring these
+# env vars makes the service deploy-ready, but a production boot will still be
+# blocked until the PostgreSQL runtime adapter lands and that guard is lifted.
+# The recovery work also currently lives on a feature branch; merge it into
+# `main` before relying on autoDeploy.
 services:
   - type: web
     name: aeden-bakes-api
@@ -9,3 +18,27 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     branch: main
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Managed PostgreSQL (Supabase session pooler + sslmode). Set in the
+      # Render dashboard; never commit the connection string.
+      - key: DATABASE_URL
+        sync: false
+      # Comma-separated allowed origins (e.g. the super-admin portal URL).
+      - key: CORS_ORIGINS
+        sync: false
+      # MSG91 OTP: both are required for real OTP to be enabled.
+      - key: MSG91_WIDGET_ID
+        sync: false
+      - key: MSG91_AUTHKEY
+        sync: false
+      # Demo accounts and debug OTP must stay off in production.
+      - key: ENABLE_DEMO_ACCOUNTS
+        value: "false"
+      - key: EXPOSE_OTP_DEBUG_CODE
+        value: "false"
+      # Optional integrations — leave unset until activated, then add in the
+      # dashboard (the app stays honest and reports them as not configured):
+      #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME
+      #   VASY_API_BASE_URL, VASY_API_KEY

@@ -232,8 +232,10 @@ test('external notifications stay queued until a provider sends them', async () 
 test('unconfigured storage and ERP do not claim success', async () => {
   const storageResponse = await fetch(`${baseUrl}/storage/status`);
   const storage = await storageResponse.json();
-  assert.equal(storage.mode, 'metadata_only');
-  assert.equal(storage.uploadStorageEnabled, false);
+  // Without R2 credentials the API uses real local storage, not cloud.
+  assert.equal(storage.mode, 'local');
+  assert.equal(storage.r2Configured, false);
+  assert.equal(storage.uploadStorageEnabled, true);
 
   const loginResponse = await fetch(`${baseUrl}/auth/login`, {
     method: 'POST',

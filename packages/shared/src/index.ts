@@ -438,7 +438,7 @@ export interface CustomerDocument {
   id: string;
   customerId: string;
   documentType: 'gst' | 'fssai' | 'cheque' | 'credit' | 'proof' | 'invoice' | 'other';
-  status: 'draft' | 'uploaded' | 'verified' | 'archived';
+  status: 'draft' | 'uploaded' | 'verified' | 'archived' | 'rejected';
   title: string;
   fileName: string;
   mimeType: string;
@@ -446,6 +446,14 @@ export interface CustomerDocument {
   tags: string[];
   createdAt: string;
   verifiedAt: string | null;
+  storageKey?: string;
+  checksumSha256?: string;
+  sizeBytes?: number;
+  contentStored?: boolean;
+  originalFileName?: string;
+  uploadedBy?: string;
+  rejectionReason?: string;
+  updatedAt?: string;
 }
 
 export interface InvoiceExport {

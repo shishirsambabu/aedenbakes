@@ -4,7 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ROLE_PERMISSIONS, canAccessCustomerResource, hasAnyRole, hasPermission } from './policy.js';
 import type { AuthPermission, AuthRole } from './policy.js';
@@ -17,6 +17,13 @@ import {
   timingSafeEqualHex,
   verifyPassword,
 } from './security.js';
+import {
+  ALLOWED_DOCUMENT_MIME_TYPES,
+  extensionForMime,
+  LocalObjectStorage,
+  MAX_DOCUMENT_BYTES,
+  validateDocumentUpload,
+} from './storage.js';
 import {
   capacities,
   customers,
@@ -778,7 +785,7 @@ type DocumentRecord = {
   id: string;
   customerId: string;
   documentType: 'gst' | 'fssai' | 'cheque' | 'credit' | 'proof' | 'invoice' | 'other';
-  status: 'draft' | 'uploaded' | 'verified' | 'archived';
+  status: 'draft' | 'uploaded' | 'verified' | 'archived' | 'rejected';
   title: string;
   fileName: string;
   mimeType: string;
@@ -786,6 +793,15 @@ type DocumentRecord = {
   tags: string[];
   createdAt: string;
   verifiedAt: string | null;
+  // R2.2 real storage fields. Optional so existing metadata-only seeds remain valid.
+  storageKey?: string;
+  checksumSha256?: string;
+  sizeBytes?: number;
+  contentStored?: boolean;
+  originalFileName?: string;
+  uploadedBy?: string;
+  rejectionReason?: string;
+  updatedAt?: string;
 };
 
 type DocumentAccessLog = {
@@ -793,7 +809,7 @@ type DocumentAccessLog = {
   documentId: string;
   customerId: string;
   actorRole: AuthRole | 'system';
-  action: 'view' | 'download' | 'verify' | 'archive';
+  action: 'view' | 'download' | 'verify' | 'archive' | 'upload' | 'reject';
   createdAt: string;
 };
 
@@ -923,6 +939,9 @@ let customerAuthRecords: AuthRecord[] = [
 const stateFilePath = join(process.cwd(), 'data', 'api-state.json');
 const databasePath = resolveDatabasePath(process.env.DATABASE_URL ?? '');
 const database = new DatabaseSync(databasePath);
+const uploadStorageRoot =
+  process.env.UPLOAD_STORAGE_DIR?.trim() || join(dirname(databasePath), 'uploads');
+const documentStorage = new LocalObjectStorage(uploadStorageRoot);
 database.exec(`
   CREATE TABLE IF NOT EXISTS app_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -4652,8 +4671,57 @@ app.get('/reports/:id/download', authenticate, requireAnyRole(['owner', 'manager
   });
 });
 
+function recordDocumentAccess(
+  document: Pick<DocumentRecord, 'id' | 'customerId'>,
+  actorRole: AuthRole | 'system',
+  action: DocumentAccessLog['action'],
+) {
+  documentAccessLogs.unshift({
+    id: `doclog_${crypto.randomUUID()}`,
+    documentId: document.id,
+    customerId: document.customerId,
+    actorRole,
+    action,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+// Validates and stores real uploaded bytes for a document, recording the
+// checksum, size, and detected MIME type. Resets any prior verification.
+function persistUploadedDocumentContent(
+  document: DocumentRecord,
+  contentBase64: string,
+  declaredMime: string | undefined,
+  actor: string,
+): { ok: true } | { ok: false; status: number; error: string } {
+  const validation = validateDocumentUpload(contentBase64, declaredMime);
+  if (!validation.ok) {
+    return { ok: false, status: validation.status, error: validation.error };
+  }
+  const storageKey = `documents/${document.customerId}/${document.id}.${extensionForMime(validation.mimeType)}`;
+  documentStorage.put(storageKey, validation.data);
+  document.storageKey = storageKey;
+  document.mimeType = validation.mimeType;
+  document.sizeBytes = validation.sizeBytes;
+  document.checksumSha256 = validation.checksumSha256;
+  document.contentStored = true;
+  document.status = 'uploaded';
+  document.rejectionReason = undefined;
+  document.verifiedAt = null;
+  document.uploadedBy = actor;
+  document.updatedAt = new Date().toISOString();
+  return { ok: true };
+}
+
+function serializeDocument(document: DocumentRecord) {
+  return {
+    ...document,
+    contentUrl: document.contentStored ? `/documents/${document.id}/content` : null,
+  };
+}
+
 app.get('/documents', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
-  res.json({ documents });
+  res.json({ documents: documents.map(serializeDocument) });
 });
 
 app.get('/customer/documents', authenticate, requireAnyRole(['customer']), (req, res) => {
@@ -4670,13 +4738,14 @@ app.get('/customer/documents', authenticate, requireAnyRole(['customer']), (req,
 });
 
 app.post('/documents', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
-  const { customerId, documentType = 'other', title, fileName, mimeType = 'application/pdf', tags = [] } = req.body as {
+  const { customerId, documentType = 'other', title, fileName, mimeType, tags = [], contentBase64 } = req.body as {
     customerId?: string;
     documentType?: DocumentRecord['documentType'];
     title?: string;
     fileName?: string;
     mimeType?: string;
     tags?: string[];
+    contentBase64?: string;
   };
   if (!customerId || !title?.trim() || !fileName?.trim()) {
     res.status(400).json({ error: 'customerId, title, and fileName are required' });
@@ -4689,23 +4758,97 @@ app.post('/documents', authenticate, requireAnyRole(['owner', 'manager', 'suppor
     return;
   }
 
+  const actor = req.session?.user.username ?? 'system';
+  const now = new Date().toISOString();
   const id = `doc_${crypto.randomUUID()}`;
   const document: DocumentRecord = {
     id,
     customerId,
     documentType,
-    status: 'uploaded',
+    // Truthful default: without bytes this is only a metadata placeholder.
+    status: 'draft',
     title: title.trim(),
     fileName: fileName.trim(),
-    mimeType,
+    mimeType: mimeType?.trim() || 'application/octet-stream',
     downloadUrl: `/documents/${id}/download`,
     tags,
-    createdAt: new Date().toISOString(),
+    createdAt: now,
     verifiedAt: null,
+    contentStored: false,
+    originalFileName: fileName.trim(),
+    uploadedBy: actor,
+    updatedAt: now,
   };
+
+  if (typeof contentBase64 === 'string' && contentBase64.trim()) {
+    const stored = persistUploadedDocumentContent(document, contentBase64, mimeType, actor);
+    if (!stored.ok) {
+      res.status(stored.status).json({ error: stored.error });
+      return;
+    }
+  }
+
   documents.unshift(document);
+  recordDocumentAccess(document, req.session?.user.role ?? 'system', 'upload');
   persistStateSoon();
-  res.status(201).json({ document, documents });
+  res.status(201).json({ document: serializeDocument(document), documents: documents.map(serializeDocument) });
+});
+
+// Customers upload their own KYC/document bytes. Scoped to their own account.
+app.post('/customer/documents', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  const { documentType = 'other', title, fileName, mimeType, contentBase64 } = req.body as {
+    documentType?: DocumentRecord['documentType'];
+    title?: string;
+    fileName?: string;
+    mimeType?: string;
+    contentBase64?: string;
+  };
+  if (!title?.trim() || !fileName?.trim()) {
+    res.status(400).json({ error: 'title and fileName are required' });
+    return;
+  }
+  if (typeof contentBase64 !== 'string' || !contentBase64.trim()) {
+    res.status(400).json({ error: 'contentBase64 is required' });
+    return;
+  }
+
+  const actor = req.session?.user.username ?? 'customer';
+  const now = new Date().toISOString();
+  const id = `doc_${crypto.randomUUID()}`;
+  const document: DocumentRecord = {
+    id,
+    customerId,
+    documentType,
+    status: 'draft',
+    title: title.trim(),
+    fileName: fileName.trim(),
+    mimeType: mimeType?.trim() || 'application/octet-stream',
+    downloadUrl: `/documents/${id}/download`,
+    tags: ['customer-upload'],
+    createdAt: now,
+    verifiedAt: null,
+    contentStored: false,
+    originalFileName: fileName.trim(),
+    uploadedBy: actor,
+    updatedAt: now,
+  };
+
+  const stored = persistUploadedDocumentContent(document, contentBase64, mimeType, actor);
+  if (!stored.ok) {
+    res.status(stored.status).json({ error: stored.error });
+    return;
+  }
+
+  documents.unshift(document);
+  recordDocumentAccess(document, req.session?.user.role ?? 'system', 'upload');
+  persistStateSoon();
+  res.status(201).json({ document: serializeDocument(document) });
 });
 
 app.post('/documents/:id/verify', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
@@ -4716,18 +4859,42 @@ app.post('/documents/:id/verify', authenticate, requireAnyRole(['owner', 'manage
     return;
   }
 
+  // Only verify documents whose real bytes are actually stored.
+  if (!document.contentStored) {
+    res.status(409).json({ error: 'Cannot verify a document with no uploaded content' });
+    return;
+  }
+
   document.status = 'verified';
   document.verifiedAt = new Date().toISOString();
-  documentAccessLogs.unshift({
-    id: `doclog_${crypto.randomUUID()}`,
-    documentId: document.id,
-    customerId: document.customerId,
-    actorRole: req.session?.user.role ?? 'system',
-    action: 'verify',
-    createdAt: document.verifiedAt,
-  });
+  document.rejectionReason = undefined;
+  document.updatedAt = document.verifiedAt;
+  recordDocumentAccess(document, req.session?.user.role ?? 'system', 'verify');
   persistStateSoon();
-  res.json({ document, documents });
+  res.json({ document: serializeDocument(document), documents: documents.map(serializeDocument) });
+});
+
+app.post('/documents/:id/reject', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const document = documents.find((entry) => entry.id === id);
+  if (!document) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  const { reason } = req.body as { reason?: string };
+  if (!reason?.trim()) {
+    res.status(400).json({ error: 'A rejection reason is required' });
+    return;
+  }
+
+  document.status = 'rejected';
+  document.rejectionReason = reason.trim();
+  document.verifiedAt = null;
+  document.updatedAt = new Date().toISOString();
+  recordDocumentAccess(document, req.session?.user.role ?? 'system', 'reject');
+  persistStateSoon();
+  res.json({ document: serializeDocument(document), documents: documents.map(serializeDocument) });
 });
 
 app.get('/documents/:id/download', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts', 'customer']), (req, res) => {
@@ -4757,7 +4924,41 @@ app.get('/documents/:id/download', authenticate, requireAnyRole(['owner', 'manag
     invoice.status = 'downloaded';
   }
   persistStateSoon();
-  res.json({ document, invoice });
+  res.json({ document: document ? serializeDocument(document) : null, invoice });
+});
+
+// Streams the real stored bytes of a document (enforcing ownership) rather
+// than metadata. Returns 409 when only metadata exists.
+app.get('/documents/:id/content', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts', 'customer']), (req, res) => {
+  const id = readRouteParam(req.params.id);
+  const document = documents.find((entry) => entry.id === id);
+  if (!document) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+  if (req.session?.user && !canAccessCustomerResource(req.session.user, document.customerId)) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+  if (!document.contentStored || !document.storageKey) {
+    res.status(409).json({ error: 'No file content is stored for this document' });
+    return;
+  }
+
+  const bytes = documentStorage.get(document.storageKey);
+  if (!bytes) {
+    res.status(410).json({ error: 'Stored file is no longer available' });
+    return;
+  }
+
+  recordDocumentAccess(document, req.session?.user.role ?? 'system', 'download');
+  persistStateSoon();
+  res.setHeader('content-type', document.mimeType);
+  res.setHeader('content-disposition', `attachment; filename="${document.originalFileName ?? document.fileName}"`);
+  if (document.checksumSha256) {
+    res.setHeader('x-checksum-sha256', document.checksumSha256);
+  }
+  res.send(bytes);
 });
 
 app.get('/invoices', authenticate, requireAnyRole(['owner', 'manager', 'support', 'accounts']), (_req, res) => {
@@ -4820,12 +5021,17 @@ app.get('/storage/status', (_req, res) => {
   );
 
   res.json({
-    mode: r2Configured ? 'cloud_configured' : 'metadata_only',
+    // Real bytes are stored locally for development until R2/S3 credentials
+    // are supplied. R2 remains the production target.
+    mode: r2Configured ? 'cloud_configured' : 'local',
     r2Configured,
-    uploadStorageEnabled: r2Configured,
+    uploadStorageEnabled: true,
+    localStorageEnabled: true,
+    allowedMimeTypes: ALLOWED_DOCUMENT_MIME_TYPES,
+    maxBytes: MAX_DOCUMENT_BYTES,
     note: r2Configured
-      ? 'Cloud object storage credentials are configured; upload verification is still required.'
-      : 'Files are not uploaded. The current document flow stores metadata only.',
+      ? 'Cloud object storage credentials are configured; the R2 adapter is still pending, so uploads currently persist to local storage.'
+      : 'Uploads persist real bytes to local development storage with SHA-256 checksums. Configure R2 for production object storage.',
   });
 });
 

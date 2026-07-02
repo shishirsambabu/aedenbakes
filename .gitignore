@@ -14,6 +14,8 @@ build/
 **/*.db
 services/api/data/api-state.json
 services/api/data/cutover-rehearsal-report.json
+services/api/data/uploads/
+**/data/uploads/
 
 # Local credentials and generated audit artifacts
 **/.env

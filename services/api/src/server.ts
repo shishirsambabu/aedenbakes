@@ -776,6 +776,12 @@ type SavedAddress = {
   active: boolean;
 };
 
+type CustomerFavorite = {
+  customerId: string;
+  productId: string;
+  createdAt: string;
+};
+
 type ReportExport = {
   id: string;
   reportCode: string;
@@ -887,6 +893,7 @@ type ApiStateSnapshot = {
   customerRequests: CustomerRequest[];
   customerApplications: CustomerApplicationRecord[];
   savedAddresses: SavedAddress[];
+  customerFavorites: CustomerFavorite[];
   reportExports: ReportExport[];
   documents: DocumentRecord[];
   documentAccessLogs: DocumentAccessLog[];
@@ -1504,6 +1511,7 @@ let savedAddresses: SavedAddress[] = [
     active: true,
   },
 ];
+let customerFavorites: CustomerFavorite[] = [];
 let reportExports: ReportExport[] = [];
 let documents: DocumentRecord[] = [
   {
@@ -2772,6 +2780,122 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
 
 app.get('/catalog', authenticate, (_req, res) => {
   res.json({ products, capacities, slots });
+});
+
+// Customer-facing catalog with search, category filter, sort, branch-aware
+// pricing, and favorite / recently-ordered flags (R3.4). Only published,
+// active products are shown.
+app.get('/customer/catalog', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+
+  const q = String(req.query.q ?? '').trim().toLowerCase();
+  const category = String(req.query.category ?? '').trim().toLowerCase();
+  const branchId = String(req.query.branchId ?? '').trim() || null;
+  const availableOnly = req.query.available === 'true';
+  const sort = String(req.query.sort ?? '').trim();
+
+  const favoriteIds = new Set(
+    customerFavorites.filter((entry) => entry.customerId === customerId).map((entry) => entry.productId),
+  );
+  const recentProductIds: string[] = [];
+  const seenRecent = new Set<string>();
+  for (const order of orders.filter((entry) => entry.customerId === customerId)) {
+    for (const item of order.items) {
+      if (!seenRecent.has(item.productId)) {
+        seenRecent.add(item.productId);
+        recentProductIds.push(item.productId);
+      }
+    }
+  }
+
+  let list = products.filter((product) => product.active && product.published);
+  if (q) {
+    list = list.filter(
+      (product) =>
+        product.name.toLowerCase().includes(q) ||
+        product.category.toLowerCase().includes(q) ||
+        (product.sku?.toLowerCase().includes(q) ?? false),
+    );
+  }
+  if (category) {
+    list = list.filter((product) => product.category.toLowerCase() === category);
+  }
+  if (availableOnly) {
+    list = list.filter((product) => product.available !== false);
+  }
+
+  const items = list.map((product) => ({
+    ...product,
+    price: resolveUnitPrice(customerId, branchId, product.id) ?? product.unitPrice,
+    favorite: favoriteIds.has(product.id),
+    recentlyOrdered: seenRecent.has(product.id),
+  }));
+
+  if (sort === 'price_asc') {
+    items.sort((a, b) => a.price - b.price);
+  } else if (sort === 'price_desc') {
+    items.sort((a, b) => b.price - a.price);
+  } else if (sort === 'name') {
+    items.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  const categories = [
+    ...new Set(products.filter((product) => product.active && product.published).map((product) => product.category)),
+  ].sort();
+  res.json({ products: items, categories, recentProductIds: recentProductIds.slice(0, 20) });
+});
+
+app.get('/customer/favorites', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+  const favorites = customerFavorites.filter((entry) => entry.customerId === customerId);
+  res.json({
+    favorites,
+    products: products.filter((product) => favorites.some((entry) => entry.productId === product.id)),
+  });
+});
+
+app.post('/customer/favorites', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+  const productId = (req.body as { productId?: string }).productId?.trim();
+  const product = products.find((entry) => entry.id === productId);
+  if (!product) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+  if (!customerFavorites.some((entry) => entry.customerId === customerId && entry.productId === product.id)) {
+    customerFavorites.unshift({ customerId, productId: product.id, createdAt: new Date().toISOString() });
+    persistStateSoon();
+  }
+  res.status(201).json({ favorites: customerFavorites.filter((entry) => entry.customerId === customerId) });
+});
+
+app.delete('/customer/favorites/:productId', authenticate, requireAnyRole(['customer']), (req, res) => {
+  const customerId = req.session?.user.customerId;
+  if (!customerId) {
+    res.status(400).json({ error: 'Customer session is missing a customer link' });
+    return;
+  }
+  const productId = readRouteParam(req.params.productId);
+  const index = customerFavorites.findIndex(
+    (entry) => entry.customerId === customerId && entry.productId === productId,
+  );
+  if (index >= 0) {
+    customerFavorites.splice(index, 1);
+    persistStateSoon();
+  }
+  res.json({ favorites: customerFavorites.filter((entry) => entry.customerId === customerId) });
 });
 
 app.get('/admin/products', authenticate, requireAnyRole(['owner', 'manager']), (_req, res) => {
@@ -7138,6 +7262,7 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     customerRequests: parsed.customerRequests ?? customerRequests,
     customerApplications: parsed.customerApplications ?? customerApplications,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
+    customerFavorites: parsed.customerFavorites ?? customerFavorites,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
       ...report,
       status: report.status ?? 'queued',
@@ -7385,6 +7510,7 @@ async function persistState() {
     customerRequests,
     customerApplications,
     savedAddresses,
+    customerFavorites,
     reportExports,
     documents,
     documentAccessLogs,
@@ -7503,6 +7629,7 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   customerRequests.splice(0, customerRequests.length, ...snapshot.customerRequests);
   customerApplications.splice(0, customerApplications.length, ...snapshot.customerApplications);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
+  customerFavorites.splice(0, customerFavorites.length, ...snapshot.customerFavorites);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
   documents.splice(0, documents.length, ...snapshot.documents);
   documentAccessLogs.splice(0, documentAccessLogs.length, ...snapshot.documentAccessLogs);

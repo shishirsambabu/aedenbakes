@@ -16,8 +16,8 @@ This file is the release truth source during the recovery program. A capability 
 | Branch management | Recovery implementation | Customer-requested branches start pending_approval and cannot be ordered against; staff drive a guarded approval/suspension state machine (pending -> active -> paused/service_hold/closed) with role and tenant guards. Branch-level GST/PO settings still pending | R3 |
 | Customer roles/approvals | Partial | Role records exist; end-to-end enforcement is incomplete | R3 |
 | Catalog and pricing | Recovery implementation | Product master (SKU, pack/unit, MOQ, tax, HSN, allergens, shelf life, lead time) with validation and order-time MOQ enforcement; customer catalog with search, category filter, sort, branch-aware pricing, favorites, and recently-ordered flags. Branch assortment, price-list effective dates, and tax-applied totals still pending | R3 |
-| Cart and checkout | Partial | Order request only; no payment settlement | R4 |
-| Capacity reservation | Unsafe prototype | Calculated counters, not atomic reservation | R4 |
+| Cart and checkout | Partial | Order placement is idempotent (Idempotency-Key dedup returns the original order) with atomic capacity and credit reservation; server-calculated totals. No payment settlement yet | R4 |
+| Capacity reservation | Recovery implementation | Order placement rejects (409) before creating an order when a product would exceed its service-date capacity; check-and-write is one synchronous block. End-to-end order test coverage awaits slot management (past-dated seed slots) | R4 |
 | Credit controls | Partial | Limit checks exist; no authoritative ledger/reconciliation | R4 |
 | Payments/refunds | Absent | No payment provider connected | R4 |
 | Standing orders | Partial | Basic records and controls; calendar and approval integrity incomplete | R4 |

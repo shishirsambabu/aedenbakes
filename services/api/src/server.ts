@@ -26,6 +26,7 @@ import {
 } from './storage.js';
 import { isPostgresConnectionString, PostgresStore } from './durability.js';
 import { findMinimumOrderQuantityViolation } from './catalog.js';
+import { findCapacityViolation, findIdempotentOrderId, type IdempotencyRecord } from './orders.js';
 import {
   capacities,
   customers,
@@ -894,6 +895,7 @@ type ApiStateSnapshot = {
   customerApplications: CustomerApplicationRecord[];
   savedAddresses: SavedAddress[];
   customerFavorites: CustomerFavorite[];
+  idempotencyKeys: IdempotencyRecord[];
   reportExports: ReportExport[];
   documents: DocumentRecord[];
   documentAccessLogs: DocumentAccessLog[];
@@ -1512,6 +1514,7 @@ let savedAddresses: SavedAddress[] = [
   },
 ];
 let customerFavorites: CustomerFavorite[] = [];
+let idempotencyKeys: IdempotencyRecord[] = [];
 let reportExports: ReportExport[] = [];
 let documents: DocumentRecord[] = [
   {
@@ -2656,6 +2659,20 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
     return;
   }
 
+  // Idempotency: a retried or double-tapped request with the same key returns
+  // the original order instead of creating a duplicate.
+  const idempotencyKey = req.header('idempotency-key')?.trim();
+  if (idempotencyKey) {
+    const existingOrderId = findIdempotentOrderId(idempotencyKeys, customer.id, idempotencyKey);
+    if (existingOrderId) {
+      const existing = orders.find((entry) => entry.id === existingOrderId);
+      if (existing) {
+        res.status(200).json({ order: existing, dashboard: buildCustomerDashboard(customer.id), idempotent: true });
+        return;
+      }
+    }
+  }
+
   const attemptId = `cust_order_attempt_${crypto.randomUUID()}`;
   const body = req.body as Partial<CustomerOrderCreateRequest>;
   const serviceDate = body.serviceDate?.trim() || getDefaultServiceDate(customer);
@@ -2716,6 +2733,17 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
     return;
   }
 
+  // Atomic capacity reservation (R4.1): reject before creating the order if any
+  // product would be overbooked for the service date. The check and the order
+  // write run in one synchronous block, so no concurrent request can interleave.
+  const capacityReason = findCapacityViolation(items, capacities, serviceDate);
+  if (capacityReason) {
+    recordCustomerOrderRejection(customer, attemptId, capacityReason);
+    persistStateSoon();
+    res.status(409).json({ error: capacityReason });
+    return;
+  }
+
   const orderItems = items.map((item) => {
     const product = products.find((entry) => entry.id === item.productId)!;
     const unitPrice = resolveUnitPrice(customer.id, selectedBranch?.id ?? null, item.productId) ?? product.unitPrice;
@@ -2754,6 +2782,14 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
   if (exposureAmount > 0) {
     customer.outstandingBalance += exposureAmount;
     refreshCustomerRisk(customer);
+  }
+  if (idempotencyKey) {
+    idempotencyKeys.unshift({
+      customerId: customer.id,
+      key: idempotencyKey,
+      orderId: order.id,
+      createdAt: new Date().toISOString(),
+    });
   }
   recordAudit({
     kind: 'customer_order_placed',
@@ -7263,6 +7299,7 @@ function normalizeSnapshot(parsed: Partial<ApiStateSnapshot>): ApiStateSnapshot 
     customerApplications: parsed.customerApplications ?? customerApplications,
     savedAddresses: parsed.savedAddresses ?? savedAddresses,
     customerFavorites: parsed.customerFavorites ?? customerFavorites,
+    idempotencyKeys: parsed.idempotencyKeys ?? idempotencyKeys,
     reportExports: (parsed.reportExports ?? reportExports).map((report) => ({
       ...report,
       status: report.status ?? 'queued',
@@ -7511,6 +7548,7 @@ async function persistState() {
     customerApplications,
     savedAddresses,
     customerFavorites,
+    idempotencyKeys,
     reportExports,
     documents,
     documentAccessLogs,
@@ -7630,6 +7668,7 @@ function rehydrateState(snapshot: ApiStateSnapshot) {
   customerApplications.splice(0, customerApplications.length, ...snapshot.customerApplications);
   savedAddresses.splice(0, savedAddresses.length, ...snapshot.savedAddresses);
   customerFavorites.splice(0, customerFavorites.length, ...snapshot.customerFavorites);
+  idempotencyKeys.splice(0, idempotencyKeys.length, ...snapshot.idempotencyKeys);
   reportExports.splice(0, reportExports.length, ...snapshot.reportExports);
   documents.splice(0, documents.length, ...snapshot.documents);
   documentAccessLogs.splice(0, documentAccessLogs.length, ...snapshot.documentAccessLogs);

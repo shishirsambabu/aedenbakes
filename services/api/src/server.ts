@@ -25,6 +25,7 @@ import {
   validateDocumentUpload,
 } from './storage.js';
 import { isPostgresConnectionString, PostgresStore } from './durability.js';
+import { findMinimumOrderQuantityViolation } from './catalog.js';
 import {
   capacities,
   customers,
@@ -2698,6 +2699,15 @@ app.post('/customer/orders', authenticate, requireAnyRole(['customer']), (req, r
     res.status(400).json({ error: reason });
     return;
   }
+  // Enforce per-product minimum order quantity (R3.3 product master).
+  const moqReason = findMinimumOrderQuantityViolation(items, products);
+  if (moqReason) {
+    recordCustomerOrderRejection(customer, attemptId, moqReason);
+    persistStateSoon();
+    res.status(400).json({ error: moqReason });
+    return;
+  }
+
   const orderItems = items.map((item) => {
     const product = products.find((entry) => entry.id === item.productId)!;
     const unitPrice = resolveUnitPrice(customer.id, selectedBranch?.id ?? null, item.productId) ?? product.unitPrice;
@@ -2768,6 +2778,57 @@ app.get('/admin/products', authenticate, requireAnyRole(['owner', 'manager']), (
   res.json({ products });
 });
 
+// Validates and applies R3.3 product-master fields (SKU, pack/MOQ, tax,
+// allergens, shelf life, lead time). Returns an error string or null. Only
+// fields present in the input are touched, so it is safe for create and patch.
+function applyProductMasterFields(
+  product: Product,
+  input: Record<string, unknown>,
+  selfId: string,
+): string | null {
+  if (input.sku !== undefined) {
+    const sku = String(input.sku).trim().toUpperCase();
+    if (sku) {
+      if (products.some((entry) => entry.id !== selfId && entry.sku && entry.sku.toUpperCase() === sku)) {
+        return `SKU ${sku} is already used by another product`;
+      }
+      product.sku = sku;
+    }
+  }
+  if (input.minimumOrderQuantity !== undefined) {
+    const moq = Number(input.minimumOrderQuantity);
+    if (!Number.isInteger(moq) || moq < 1) {
+      return 'minimumOrderQuantity must be an integer of at least 1';
+    }
+    product.minimumOrderQuantity = moq;
+  }
+  if (input.taxRatePercent !== undefined) {
+    const tax = Number(input.taxRatePercent);
+    if (!Number.isFinite(tax) || tax < 0 || tax > 100) {
+      return 'taxRatePercent must be between 0 and 100';
+    }
+    product.taxRatePercent = tax;
+  }
+  for (const field of ['shelfLifeDays', 'leadTimeDays'] as const) {
+    if (input[field] !== undefined) {
+      const value = Number(input[field]);
+      if (!Number.isInteger(value) || value < 0) {
+        return `${field} must be a non-negative integer`;
+      }
+      product[field] = value;
+    }
+  }
+  if (typeof input.packSize === 'string') product.packSize = input.packSize.trim() || undefined;
+  if (typeof input.unitOfMeasure === 'string') product.unitOfMeasure = input.unitOfMeasure.trim() || undefined;
+  if (typeof input.hsnCode === 'string') product.hsnCode = input.hsnCode.trim() || undefined;
+  if (input.allergens !== undefined && Array.isArray(input.allergens)) {
+    product.allergens = input.allergens
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .map((entry) => entry.trim());
+  }
+  return null;
+}
+
 app.post('/admin/products', authenticate, requireAnyRole(['owner', 'manager']), (req, res) => {
   const body = req.body as Partial<{
     name: string;
@@ -2802,6 +2863,11 @@ app.post('/admin/products', authenticate, requireAnyRole(['owner', 'manager']), 
     badge: body.badge?.trim() || 'New',
     note: body.note?.trim() || 'Created from the admin product master.',
   };
+  const masterError = applyProductMasterFields(product, req.body as Record<string, unknown>, product.id);
+  if (masterError) {
+    res.status(400).json({ error: masterError });
+    return;
+  }
   products.unshift(product);
   recordAudit({
     kind: 'approval_queued',
@@ -2870,6 +2936,12 @@ app.patch('/admin/products/:id', authenticate, requireAnyRole(['owner', 'manager
   }
   if (typeof body.published === 'boolean') {
     product.published = body.published;
+  }
+
+  const masterError = applyProductMasterFields(product, req.body as Record<string, unknown>, product.id);
+  if (masterError) {
+    res.status(400).json({ error: masterError });
+    return;
   }
 
   recordAudit({

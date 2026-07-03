@@ -15,7 +15,7 @@ This file is the release truth source during the recovery program. A capability 
 | Customer session restore | Absent | Session is not retained after relaunch | R2 |
 | Branch management | Recovery implementation | Customer-requested branches start pending_approval and cannot be ordered against; staff drive a guarded approval/suspension state machine (pending -> active -> paused/service_hold/closed) with role and tenant guards. Branch-level GST/PO settings still pending | R3 |
 | Customer roles/approvals | Partial | Role records exist; end-to-end enforcement is incomplete | R3 |
-| Catalog and pricing | Partial | Prototype catalog with server data; commercial rules need hardening | R3 |
+| Catalog and pricing | Recovery implementation | Product master supports SKU (unique), pack/unit, MOQ, tax rate, HSN, allergens, shelf life, and lead time with validation; MOQ is enforced at order time. Branch assortment, price-list effective dates, and catalog search/filters still pending | R3 |
 | Cart and checkout | Partial | Order request only; no payment settlement | R4 |
 | Capacity reservation | Unsafe prototype | Calculated counters, not atomic reservation | R4 |
 | Credit controls | Partial | Limit checks exist; no authoritative ledger/reconciliation | R4 |

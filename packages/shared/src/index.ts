@@ -132,6 +132,16 @@ export interface Product {
   cutoff?: string;
   badge?: string;
   note?: string;
+  // R3.3 product master fields
+  sku?: string;
+  packSize?: string;
+  unitOfMeasure?: string;
+  minimumOrderQuantity?: number;
+  taxRatePercent?: number;
+  hsnCode?: string;
+  allergens?: string[];
+  shelfLifeDays?: number;
+  leadTimeDays?: number;
 }
 
 export interface ProductDayCapacity {
